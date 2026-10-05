@@ -1,6 +1,6 @@
 ---
 description: Restore autoCompactWindow and any model/advisor setting the pacer changed
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" uninstall:*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" uninstall`

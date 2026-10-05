@@ -1,7 +1,7 @@
 ---
 description: List every real lockout in your transcripts and replay each window (read-only)
 argument-hint: "[--days N]"
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/backtest.py":*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/backtest.py" $ARGUMENTS`

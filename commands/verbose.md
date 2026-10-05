@@ -1,7 +1,7 @@
 ---
 description: Turn verbose hook logging on or off (off by default; on logs every run with full detail for debugging)
 argument-hint: "[on|off]"
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" verbose:*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" verbose $ARGUMENTS`

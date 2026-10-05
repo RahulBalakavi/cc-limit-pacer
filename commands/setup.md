@@ -1,7 +1,7 @@
 ---
 description: One-time setup — compact at ~830k on 1M-window models (backs up settings.json first)
 argument-hint: "[--compact-at TOKENS]"
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" install:*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" install --plugin $ARGUMENTS`

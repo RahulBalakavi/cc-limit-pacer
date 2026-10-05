@@ -1,7 +1,7 @@
 ---
 description: Bug checklist for the last day — hook errors, slow runs, missed lockouts, sensor drift, settings changes
 argument-hint: "[--hours N]"
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" report:*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" report $ARGUMENTS`

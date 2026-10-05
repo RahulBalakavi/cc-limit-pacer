@@ -1,12 +1,11 @@
 {
   "name": "cc-limit-pacer",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Pace Claude Code against your 5-hour and weekly limits: fewer lockouts, fewer compactions, and an audit of what you waste.",
   "author": {
     "name": "Rahul Balakavi",
     "url": "https://github.com/RahulBalakavi"
   },
-  "hooks": "./hooks/hooks.json",
   "displayName": "CC Limit Pacer",
   "homepage": "https://github.com/RahulBalakavi/cc-limit-pacer",
   "repository": "https://github.com/RahulBalakavi/cc-limit-pacer",

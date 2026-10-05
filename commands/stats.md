@@ -1,10 +1,10 @@
 ---
 description: Stats page — limits now, what the pacer saves, waste, weekly and 5h usage history, pacer activity — as a shareable artifact
 argument-hint: "[--days N | --since YYYY-MM-DD] [--fable-pct P]"
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/audit.py" --html:*)
 ---
 
-!`python3 "${CLAUDE_PLUGIN_ROOT}/audit.py" --html ~/.claude/state/cc-limit-pacer/stats.html $ARGUMENTS && echo "plugin root: ${CLAUDE_PLUGIN_ROOT}"`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/audit.py" --html ~/.claude/state/cc-limit-pacer/stats.html $ARGUMENTS`
 
 The stats page is at `~/.claude/state/cc-limit-pacer/stats.html` (a self-contained page).
 - If `--fable-pct` was not passed and you have a usage tool (e.g. `get_usage`), read the "Weekly · Fable" % and rerun the command above with `--fable-pct P` so the Fable meter is real.

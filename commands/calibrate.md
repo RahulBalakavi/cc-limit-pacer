@@ -1,7 +1,7 @@
 ---
 description: Teach the pacer your budget from one /usage reading
 argument-hint: <5h %> <weekly %> "<weekly reset YYYY-MM-DD HH:MM>" ["<5h reset YYYY-MM-DD HH:MM>"]
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" calibrate:*)
 ---
 
 Calibrate cc-limit-pacer with: $ARGUMENTS

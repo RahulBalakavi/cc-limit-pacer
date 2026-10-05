@@ -1,7 +1,7 @@
 ---
 description: Replay your last month of sessions under each policy (read-only) to see if this plugin helps you
 argument-hint: "[--days N]"
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/simulate.py":*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/simulate.py" $ARGUMENTS`

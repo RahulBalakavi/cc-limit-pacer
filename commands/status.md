@@ -1,6 +1,6 @@
 ---
 description: Current usage pace, whether the pacer is running hot, held runs, and lockouts per week since install
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" status:*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/limit_pacer.py" status`

@@ -1,7 +1,7 @@
 ---
 description: What this plugin would have saved you (compactions, lockouts), what you wasted, and how much of each limit you use
 argument-hint: "[--days N | --since YYYY-MM-DD] [--fable-pct P]"
-allowed-tools: Bash(python3:*)
+allowed-tools: Bash(python3 "${CLAUDE_PLUGIN_ROOT}/audit.py":*)
 ---
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/audit.py" $ARGUMENTS`
