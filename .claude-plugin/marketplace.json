@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cc-limit-pacer",
+  "description": "Usage pacing against Claude Code plan limits.",
+  "owner": {
+    "name": "Rahul Balakavi",
+    "url": "https://github.com/RahulBalakavi"
+  },
+  "plugins": [
+    {
+      "name": "cc-limit-pacer",
+      "description": "When you're on pace to hit a limit, step new sessions down a model tier, turn the advisor off, and hold automated runs; compact later; audit savings and waste.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
