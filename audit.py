@@ -73,11 +73,12 @@ def audit(days=23, fable_pct=None):
     cal = g.load_json(g._p('calibration.json'), {})
     if not cal.get('five_hour') or not cal.get('seven_day'):
         raise SystemExit('calibrate first: /cc-limit-pacer:calibrate (or limit_pacer.py calibrate --five-hour P --weekly P --weekly-reset "YYYY-MM-DD HH:MM")')
-    B5, B7 = cal['five_hour'], cal['seven_day']
     ev = s.load(days)
     if not ev: raise SystemExit(f'no Claude Code transcripts in the last {days} days')
     real = b.find_lockouts(days)
     wb = s.week_bounds([cal['week_anchor']] + [x['reset'] for x in real if x['kind'] == 'week' and not x['other']], ev[0][1], ev[-1][1])
+    pts = s.budget_points(ev, real, cal)                     # budgets changed over time: replay each window with its own
+    B5, B7 = s.budget_fn(ev, real, pts['five_hour'], '5h'), s.budget_fn(ev, real, pts['seven_day'], 'week')
     weeks = max((ev[-1][1] - ev[0][1]) / W7, 1 / 7)
     post = s.post_compact_size(ev)
     fr = [x['reset'] for x in real if x['kind'] == '5h']
@@ -101,14 +102,14 @@ def audit(days=23, fable_pct=None):
         if a < ev[0][1] - 3600 or a > now: continue
         sp = sum(c for ts, c, _ in calls if a <= ts < z)
         fab = sum(c for ts, c, m in calls if a <= ts < z and (m or '').startswith(FABLE))
-        wk.append({'start': a, 'end': z, 'done': z <= now, 'full': z - a >= 6 * 86400, 'pct': 100 * sp / B7, 'fable_usd': fab, 'usd': sp,
+        wk.append({'start': a, 'end': z, 'done': z <= now, 'full': z - a >= 6 * 86400, 'pct': 100 * sp / B7(a), 'fable_usd': fab, 'usd': sp,
                    'locked': any(x['kind'] == 'week' and a <= x['t'] < z for x in real)})
     done = [w for w in wk if w['done']]
     cur = next((w for w in wk if not w['done']), None)
     unused = [max(0.0, 100 - w['pct']) for w in done if w['full']]
 
     fives = five_hour_windows(calls)
-    f_pct = [100 * x / B5 for _, x in fives]
+    f_pct = [100 * x / B5(t) for t, x in fives]
     fable = {'pct_now': fable_pct, 'usd_this_week': cur['fable_usd'] if cur else 0,
              'share': sum(c for _, c, m in calls if (m or '').startswith(FABLE)) / (total or 1)}
     if fable_pct and cur and cur['fable_usd'] > 0:
@@ -122,7 +123,7 @@ def audit(days=23, fable_pct=None):
              'other': [(x['kind'], x['t']) for x in real if x['other']],
              'extra': sum(not any(k == x['kind'] and abs(t - x['t']) < 4 * 3600 for x in real) for k, t in L)}
     real_hours = sum(max(0.0, x['reset'] - x['t']) for x in real) / 3600
-    return {'generated': now, 'days': days, 'weeks': weeks, 'budgets': {'five_hour': B5, 'seven_day': B7},
+    return {'generated': now, 'days': days, 'weeks': weeks, 'budgets': {'five_hour': cal['five_hour'], 'seven_day': cal['seven_day']}, 'budget_points': pts,
             'real_lockouts': {'5h': sum(x['kind'] == '5h' for x in real), 'week': sum(x['kind'] == 'week' for x in real), 'hours_locked': real_hours},
             'policies': policies, 'match': match, 'post_compact_k': post // 1000,
             'wasted': {'compactions': n_comp, 'compaction_usd': comp_usd, 'compaction_share': comp_usd / (total or 1),
@@ -144,7 +145,13 @@ def _cred(r):
     s = f"the replay reproduces {m['hit']} of your {m['of']} real lockouts within 4h, plus {m['extra']} that didn't happen"
     if m.get('other'): s += f"; {len(m['other'])} more happened while another weekly lockout was in force, so they came from another account sharing this machine and are left out"
     if m['missed']: s += '; missed ' + ', '.join(f"{k} {dt.datetime.fromtimestamp(t).strftime('%b %d %H:%M')}" for k, t in m['missed'])
-    return s + ('. Budgets look off or several accounts share this machine; treat the deltas as rough.' if _shaky(r) else '.')
+    s += ('. Budgets look off or several accounts share this machine; treat the deltas as rough.' if _shaky(r) else '.')
+    return s + (" Each window is replayed against the limit it really had (its own lockout's reading, or at least what it"
+                " spent without one), so the today row matches by construction and the other rows are compared on those same limits.")
+
+def _bp(r):
+    p = r.get('budget_points') or {}
+    return '; '.join(f"{lbl} " + ' → '.join(f"${v:,.0f} ({_d(t)})" for t, v in p.get(k, [])) for k, lbl in (('five_hour', '5h'), ('seven_day', 'weekly')) if p.get(k))
 
 def _d(t): return dt.datetime.fromtimestamp(t).strftime('%b %d')
 
@@ -335,7 +342,7 @@ at the cost of <b>${g8['held_back_usd']:,.0f}</b> of automated work held until t
 <section><h2>5-hour windows</h2>{_hist_svg(fh['hist'])}
 <p class="note">{fh['windows']} windows; median {fh['median_pct']:.0f}% of the limit, p90 {fh['p90_pct']:.0f}%. {fh['over_90']} ran past 90%, {fh['under_25']} stayed under 25%.</p></section>
 <section><h2>Pacer activity</h2>{activity}</section>
-<p class="note">Dollar figures are API-list-price equivalents of your token use, which is what the plan limits meter. Budgets come from your calibration: 5h ≈ ${r['budgets']['five_hour']:,.0f}, weekly ≈ ${r['budgets']['seven_day']:,.0f}.</p>
+<p class="note">Dollar figures are API-list-price equivalents of your token use, which is what the plan limits meter. Budgets now: 5h ≈ ${r['budgets']['five_hour']:,.0f}, weekly ≈ ${r['budgets']['seven_day']:,.0f}. Readings over time: {_bp(r)}.</p>
 </div>"""
 
 def main():

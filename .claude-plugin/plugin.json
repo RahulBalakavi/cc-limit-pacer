@@ -1,6 +1,6 @@
 {
   "name": "cc-limit-pacer",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Pace Claude Code against your 5-hour and weekly limits: fewer lockouts, fewer compactions, and an audit of what you waste.",
   "author": {
     "name": "Rahul Balakavi",
