@@ -239,6 +239,10 @@ assert json.load(open(g._p('calibration.json')))['five_hour'] == 1e6            
 app_cache(40, now); g.usage(now)
 w5n = g.spend(g.scan(now=now), rs.timestamp() - g.W5 - 600, now)
 assert abs(json.load(open(g._p('calibration.json')))['five_hour'] - w5n / 0.4) < 1e-6   # real /usage reading replaces the budget
+g.save_json(g._p('calibration.json'), {'five_hour': 1e6, 'seven_day': 1e9, 't': now})
+app_cache(40, now - 7 * 3600, acct='a1'); g.usage(now)
+cal = json.load(open(g._p('calibration.json')))
+assert cal['five_hour'] == 1e6 and cal['t'] == now and 'five_anchor' not in cal, cal   # a stale cached reading changes nothing
 print('calibration ok')
 
 # --- simulate: a 5h window snaps to a known real reset and keeps only the spend that belongs to it

@@ -220,6 +220,8 @@ def app_reading(calls):
     t = (c.get('fetchedAtMs') or 0) / 1000
     cal = load_json(_p('calibration.json'), {})
     if t <= cal.get('app_reading_t', 0) or c.get('accountUuid') != (d.get('oauthAccount') or {}).get('accountUuid'): return
+    if time.time() - t > 6 * 3600 or t <= cal.get('t', 0):       # stale, or older than the calibration we have: just note it
+        cal['app_reading_t'] = t; save_json(_p('calibration.json'), cal); return
     u = c.get('utilization') or {}
     rl = {k: {'used_percentage': u[k]['utilization'], 'resets_at': _ts(u[k]['resets_at'])}
           for k in ('five_hour', 'seven_day') if (u.get(k) or {}).get('utilization') is not None and u[k].get('resets_at')}
