@@ -174,8 +174,15 @@ assert json.load(open(g.SETTINGS))['model'] == 'opus[1m]'                      #
 out = adj('set', 'compact=600k', 'model=haiku')
 st_s = json.load(open(g.SETTINGS))
 assert st_s['autoCompactWindow'] == 632_000 and st_s['model'] == 'haiku' and 'pinned by you' in out, (st_s, out)
+adj('auto', 'model', 'compact', 'advisor'); g.save_json(g.SETTINGS, {'model': 'opus[1m]', 'advisorModel': 'opus', 'autoCompactWindow': 862_000})
+g.save_json(g._p('pacer.json'), {}); g.save_json(g._p('install.json'), {'baseline': {'model': 'opus[1m]', 'advisorModel': 'opus'}})
+run_hook('SessionStart', '/Users/me/project', LIMIT_PACER_FORCE='hot')
+assert '(was 830k)' in adj() and 'pinned as yours' in adj('keep')
+g.save_json(g._p('calibration.json'), {'five_hour': 1e9, 'seven_day': 1e12})   # cool
+run_hook('SessionStart', '/Users/me/project')
+assert json.load(open(g.SETTINGS))['model'] == 'sonnet[1m]', json.load(open(g.SETTINGS))   # kept stays kept through cool-down
 assert 'resume guard: warn' in adj('resume', 'warn').replace('idle-resume guard', 'resume guard')
-assert 'automatic' in adj('auto', 'model', 'compact') and g.config()['pinned'] == []
+assert 'automatic' in adj('auto', 'model', 'compact', 'advisor') and g.config()['pinned'] == []
 print('logging ok')
 
 p = subprocess.run([sys.executable, g.__file__, 'report', '--hours', '1'], capture_output=True, text=True)

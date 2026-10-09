@@ -329,7 +329,8 @@ def apply_levers(mode, st, s, baseline=None, spare_model='fable[1m]', pinned=(),
             else:
                 changes.append({'key': k, 'skipped': 'user changed it while hot', 'now': s.get(k)})
         st.pop('wrote'); st.pop('saved', None); st.pop('mode', None)
-    elif not st.get('wrote') and not mode and baseline and s.get('advisorModel') == 'off' != baseline.get('advisorModel') \
+    elif not st.get('wrote') and not mode and baseline and not {'model', 'advisorModel'} & set(pinned) \
+            and s.get('advisorModel') == 'off' != baseline.get('advisorModel') \
             and s.get('model') == step_down(baseline.get('model')) != baseline.get('model'):
         for k in ('model', 'advisorModel'):                   # orphaned step-down (state lost): back to the baseline
             changes.append({'key': k, 'from': s.get(k), 'to': baseline.get(k), 'why': 'orphaned step-down'})
@@ -434,7 +435,7 @@ def _pace(ev, t0):
         hot_resets = [rl[k]['resets_at'] for k, (p, _) in paces(rl, now).items() if p >= EXIT[0]]
         resets = min(hot_resets or [v['resets_at'] for v in rl.values() if v.get('resets_at')] or [now])
         out = {'decision': 'block', 'reason': f"cc-limit-pacer: holding automated run — usage {pc}; "
-               f"retry after {dt.datetime.fromtimestamp(resets):%a %H:%M} or set LIMIT_PACER_ALLOW=1"}
+               f"retry after {dt.datetime.fromtimestamp(resets):%a %b %-d %H:%M} or set LIMIT_PACER_ALLOW=1"}
     if msgs: out['systemMessage'] = ' '.join(msgs)
     return out
 
@@ -473,7 +474,8 @@ def resume_guard(ev, cfg, now):
     i, _, cr = rates(model)
     usd = ctx * (2 * i if ttl == 3600 else 1.25 * i)               # the whole prefix written to cache again
     cal = load_json(_p('calibration.json'), {})
-    share = ', '.join(f'{100 * usd / cal[k]:.1f}% of your {lbl}' for k, lbl in (('seven_day', 'week'), ('five_hour', '5-hour window')) if cal.get(k))
+    pct = lambda x: f'{x:.1f}%' if x >= 0.1 else '<0.1%'
+    share = ', '.join(f'{pct(100 * usd / cal[k])} of your {lbl}' for k, lbl in (('seven_day', 'week'), ('five_hour', '5-hour window')) if cal.get(k))
     seen = load_json(_p('resume.json'), {})
     sid = ev.get('session_id') or ev.get('transcript_path')
     rec = {'idle_h': round((now - ts) / 3600, 1), 'ctx': ctx, 'usd': round(usd, 2), 'mode': mode}
@@ -589,9 +591,10 @@ def cmd_adjust(a):
         fcntl.flock(lock, fcntl.LOCK_EX)
         st, s = load_json(_p('pacer.json'), {}), load_json(SETTINGS, {})
         act, args = (a.action or 'show'), a.args
-        if act == 'keep' and st.get('wrote'):                      # values stay as they are, now the user's
-            st['declined'] = st.pop('mode', 'hot'); st.pop('wrote'); st.pop('saved', None)
-            print('kept: the pacer will not restore these until the mode changes')
+        if act == 'keep' and st.get('wrote'):                      # values stay as they are, now the user's (pinned)
+            kept = list(st['wrote']); st['declined'] = st.pop('mode', 'hot'); st.pop('wrote'); st.pop('saved', None)
+            cfg['pinned'] = sorted(set(cfg['pinned']) | set(kept))
+            print(f"kept and pinned as yours: {', '.join(n for n, k in KEYS.items() if k in kept)}; `adjust auto <name>` hands one back")
         elif act == 'undo' and st.get('wrote'):
             mode = st.get('mode', 'hot'); ch = apply_levers(None, st, s); st['declined'] = mode
             save_json(SETTINGS, s); print(f'undone: {describe(ch) or "nothing to restore"}; the pacer leaves this {mode} mode alone')
@@ -623,8 +626,10 @@ def cmd_adjust(a):
     for name, key in KEYS.items():
         v = s.get(key); owned = key in st.get('wrote', {}) and st['wrote'][key] == v
         shown = f'{(v - FIRE_EARLY) // 1000}k' if key == 'autoCompactWindow' and isinstance(v, int) else v   # where it compacts
+        was = st.get('saved', {}).get(key)
+        was = f'{(was - FIRE_EARLY) // 1000}k' if key == 'autoCompactWindow' and isinstance(was, int) else was
         print(f"  {name:8} {str(shown):14} " + ('pinned by you' if key in cfg['pinned'] else
-              f"adjusted by the pacer (was {st['saved'].get(key)})" if owned else 'yours'))
+              f"adjusted by the pacer (was {was})" if owned else 'yours'))
     print(f"  idle-resume guard: {cfg['resume_guard']} (sessions over {cfg['resume_min_ctx'] // 1000}k)   "
           f"spare-week model: {cfg['spare_model'] or 'off'}   compaction while hot: {cfg['compact_tight'] // 1000}k")
     recent = []
