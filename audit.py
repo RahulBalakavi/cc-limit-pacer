@@ -102,14 +102,14 @@ def audit(days=23, fable_pct=None):
         if a < ev[0][1] - 3600 or a > now: continue
         sp = sum(c for ts, c, _ in calls if a <= ts < z)
         fab = sum(c for ts, c, m in calls if a <= ts < z and (m or '').startswith(FABLE))
-        wk.append({'start': a, 'end': z, 'done': z <= now, 'full': z - a >= 6 * 86400, 'pct': 100 * sp / B7(a), 'fable_usd': fab, 'usd': sp,
+        wk.append({'start': a, 'end': z, 'done': z <= now, 'full': z - a >= 6 * 86400, 'pct': 100 * sp / cal['seven_day'], 'fable_usd': fab, 'usd': sp,
                    'locked': any(x['kind'] == 'week' and a <= x['t'] < z for x in real)})
     done = [w for w in wk if w['done']]
     cur = next((w for w in wk if not w['done']), None)
     unused = [max(0.0, 100 - w['pct']) for w in done if w['full']]
 
     fives = five_hour_windows(calls)
-    f_pct = [100 * x / B5(t) for t, x in fives]
+    f_pct = [100 * x / cal['five_hour'] for _, x in fives]   # usage shares: against today's budgets; only the replay needs hindsight limits
     fable = {'pct_now': fable_pct, 'usd_this_week': cur['fable_usd'] if cur else 0,
              'share': sum(c for _, c, m in calls if (m or '').startswith(FABLE)) / (total or 1)}
     if fable_pct and cur and cur['fable_usd'] > 0:
