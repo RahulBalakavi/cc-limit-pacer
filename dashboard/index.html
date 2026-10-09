@@ -1,0 +1,235 @@
+<style>
+.lp { display: grid; gap: var(--cds-gap-lg); font-family: var(--font-anthropic-sans); max-width: 1100px; margin-inline: auto; }
+.lp h1 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0; }
+.lp .take { color: var(--color-fg-muted); margin: var(--cds-gap-xs) 0 0; font-size: var(--cds-font-size-body); }
+.lp h2 { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: 0 0 var(--cds-gap-sm); }
+.lp .grid { display: grid; gap: var(--cds-gap-md); grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
+.lp .grid2 { display: grid; gap: var(--cds-gap-md); grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
+.lp .card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); min-width: 0; }
+.lp .lbl { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.lp .num { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); font-variant-numeric: tabular-nums; margin: var(--cds-gap-xs) 0; }
+.lp .note { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin: 0 0 var(--cds-gap-sm); }
+.lp .good { color: var(--color-ok); } .lp .bad { color: var(--color-bad); }
+.lp table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: var(--cds-font-size-body); }
+.lp th, .lp td { padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); text-align: right; white-space: nowrap; }
+.lp th:first-child, .lp td:first-child { text-align: left; }
+.lp th { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); font-weight: var(--cds-font-weight-medium); }
+.lp tr.us td { font-weight: var(--cds-font-weight-medium); }
+.lp .tw { overflow-x: auto; }
+.lp .chart { position: relative; min-height: 220px; }
+.lp .tip { position: absolute; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); border-radius: var(--cds-radius); box-shadow: var(--cds-shadow-popover); padding: var(--cds-pad-xs) var(--cds-pad-sm); font-size: var(--cds-font-size-caption); pointer-events: none; display: none; white-space: nowrap; }
+.lp .tip .d { color: var(--cds-text-secondary); }
+.lp .ledger td:first-child { white-space: normal; }
+.lp [data-dash-source-state=empty] { color: transparent; }
+.lp [data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+.lp .fail { display: flex; align-items: center; justify-content: center; gap: var(--cds-gap-xs); color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); min-height: inherit; }
+.lp .fail::before { content: ''; width: .375rem; height: .375rem; border-radius: 50%; background: var(--color-bad); }
+</style>
+<div class="lp">
+  <header>
+    <h1 id="top">CC Limit Pacer</h1>
+    <p class="take dash-skeleton" id="takeaway" data-source="pacer_delta">—</p>
+  </header>
+
+  <section id="now">
+    <h2>Limits now</h2>
+    <div class="grid">
+      <div class="card"><div class="lbl">5-hour window used</div><div class="num dash-skeleton" data-source="headline" data-field="value" data-where="metric=five_hour_pct" data-fmt="pct">—</div><div class="lbl" data-source="headline" data-field="note" data-where="metric=five_hour_pct"></div></div>
+      <div class="card"><div class="lbl">Weekly limit used, all models</div><div class="num dash-skeleton" data-source="headline" data-field="value" data-where="metric=weekly_pct" data-fmt="pct">—</div><div class="lbl" data-source="headline" data-field="note" data-where="metric=weekly_pct"></div></div>
+      <div class="card"><div class="lbl">Weekly Fable allowance used</div><div class="num dash-skeleton" data-source="headline" data-field="value" data-where="metric=fable_pct" data-fmt="pct">—</div><div class="lbl" data-source="headline" data-field="note" data-where="metric=fable_pct"></div></div>
+    </div>
+  </section>
+
+  <section id="saved">
+    <h2>What the pacer would have saved</h2>
+    <div class="grid">
+      <div class="card"><div class="lbl">Compactions saved per week</div><div class="num dash-skeleton" data-source="pacer_delta" data-field="compactions_saved_per_week" data-row="0" data-fmt="dec">—</div><div class="lbl">830k + pacer vs today</div></div>
+      <div class="card"><div class="lbl">Change in hours locked out</div><div class="num dash-skeleton" id="hrs" data-source="pacer_delta" data-field="hours_locked_change" data-row="0" data-fmt="signed">—</div><div class="lbl">830k + pacer vs today, whole period</div></div>
+      <div class="card"><div class="lbl">Automated work held back</div><div class="num dash-skeleton" data-source="policies" data-field="held_back_usd" data-where="policy=830k%20%2B%20pacer" data-fmt="usd">—</div><div class="lbl">API-equivalent $, not replayed later</div></div>
+    </div>
+    <div class="card" style="margin-top: var(--cds-gap-md)">
+      <h2 id="policies-title">Replay of every session under three policies</h2>
+      <p class="note">Each window is replayed against the limit it really had (its own lockout's reading, or at least what it spent without one), so the today row matches your real lockouts and the others are compared on the same limits.</p>
+      <div class="tw"><table id="policies" data-source="policies" data-row-key="policy">
+        <thead><tr><th data-field="policy">Policy</th><th data-field="compactions_per_week">Compactions / wk</th><th data-field="lockouts_5h">5h lockouts</th><th data-field="lockouts_week">Weekly lockouts</th><th data-field="hours_locked">Hours locked</th><th data-field="usage_pct">Usage</th><th data-field="held_back_usd">Held back</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="history" class="grid2">
+    <div class="card">
+      <h2>Weekly limit used</h2>
+      <p class="note">Each bar is one weekly window by its start, against today's weekly budget. Red hit the limit; faded is this week so far.</p>
+      <div class="chart dash-skeleton" id="weekly" data-source="weekly"></div>
+    </div>
+    <div class="card">
+      <h2>5-hour windows by share used</h2>
+      <p class="note">How many 5-hour windows used each share of today's 5-hour budget.</p>
+      <div class="chart dash-skeleton" id="fivehour" data-source="five_hour"></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2 id="waste-title">What you wasted</h2>
+      <p class="note">Over the audit period, from your transcripts. Dollar figures are API-list-price equivalents, which is what the plan limits meter.</p>
+      <table class="ledger" id="waste" data-source="headline" data-row-key="metric">
+        <thead><tr><th data-field="label">Item</th><th data-field="value">Value</th><th data-field="note">Detail</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2 id="budgets-title">Your limits over time</h2>
+      <p class="note">Each reading of a budget: a real lockout, a refit the pacer made, or today's calibration.</p>
+      <div class="tw"><table id="budgets" data-source="budgets" data-row-key="at,limit">
+        <thead><tr><th data-field="at">When</th><th data-field="limit">Limit</th><th data-field="budget_usd">Budget</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="activity">
+    <h2>Pacer activity</h2>
+    <div class="grid">
+      <div class="card"><div class="lbl">Hook runs</div><div class="num dash-skeleton" data-source="headline" data-field="value" data-where="metric=hook_runs" data-fmt="int">—</div></div>
+      <div class="card"><div class="lbl">Runs while hot</div><div class="num dash-skeleton" data-source="headline" data-field="value" data-where="metric=hot_runs" data-fmt="int">—</div></div>
+      <div class="card"><div class="lbl">Automated runs held</div><div class="num dash-skeleton" data-source="headline" data-field="value" data-where="metric=held" data-fmt="int">—</div></div>
+      <div class="card"><div class="lbl">Hook latency p95</div><div class="num dash-skeleton" data-source="headline" data-field="value" data-where="metric=p95_ms" data-fmt="ms">—</div></div>
+    </div>
+  </section>
+</div>
+<script>
+dash.calc('pacer_delta', {
+  inputs: ['policies'],
+  title: 'Pacer vs today',
+  description: 'Compactions per week saved and change in hours locked: the 830k + pacer row minus the today row.',
+  fn: (policies) => {
+    const by = Object.fromEntries(policies.map(p => [p.policy, p]));
+    const a = by['today'], b = by['830k + pacer'];
+    return [{compactions_saved_per_week: +(a.compactions_per_week - b.compactions_per_week).toFixed(1),
+             hours_locked_change: +(b.hours_locked - a.hours_locked).toFixed(1)}];
+  }
+});
+</script>
+<script>
+const WASTE = ['real_lockouts', 'hours_locked', 'compactions', 'compaction_usd', 'advisor_usd', 'weekly_unused_avg_pct', 'fable_share_pct'];
+const FMT = {
+  pct: v => d3.format('.0f')(v) + '%', dec: v => d3.format('.1f')(v), int: d3.format(','), ms: v => d3.format(',')(v) + ' ms',
+  usd: v => '$' + d3.format(',.0f')(v), signed: v => (v > 0 ? '+' : v < 0 ? '−' : '') + d3.format('.1f')(Math.abs(v)) + 'h'
+};
+const wasteFmt = {hours_locked: v => d3.format('.0f')(v) + 'h', compaction_usd: FMT.usd, advisor_usd: FMT.usd,
+                  weekly_unused_avg_pct: v => d3.format('.1f')(v) + '%', fable_share_pct: v => d3.format('.0f')(v) + '%'};
+
+function cell(el, ds, pick) {
+  const d = dash.data(ds);
+  el.classList.toggle('dash-skeleton', d.status === 'loading');
+  if (d.status === 'error' || d.status === 'connect') { el.classList.remove('dash-skeleton'); el.innerHTML = '<span class="fail">Failed to load</span>'; return null; }
+  if (d.status !== 'ok') { el.textContent = '—'; return null; }
+  return pick(d.data);
+}
+
+function tiles() {
+  document.querySelectorAll('.lp .lbl[data-source]').forEach(el => {
+    const d = dash.data(el.dataset.source); if (d.status !== 'ok') { el.textContent = ''; return; }
+    const val = decodeURIComponent(el.dataset.where.split('=')[1]);
+    el.textContent = d.data.find(r => r.metric === val)?.note || '';
+  });
+  document.querySelectorAll('.lp .num[data-source]').forEach(el => {
+    const ds = el.dataset.source, f = el.dataset.field;
+    const v = cell(el, ds, rows => {
+      if (el.dataset.row != null) return rows[+el.dataset.row]?.[f];
+      const [k, val] = el.dataset.where.split('=');
+      return rows.find(r => String(r[k]) === decodeURIComponent(val))?.[f];
+    });
+    if (v == null) { if (dash.data(ds).status === 'ok') el.textContent = '—'; return; }
+    el.textContent = FMT[el.dataset.fmt](Number(v));
+    if (el.id === 'hrs') { el.classList.toggle('good', v < 0); el.classList.toggle('bad', v > 0); }
+  });
+  const t = document.getElementById('takeaway');
+  const d = cell(t, 'pacer_delta', rows => rows[0]);
+  if (d) {
+    const h = d.hours_locked_change;
+    t.textContent = `The pacer saves ${d3.format('.1f')(d.compactions_saved_per_week)} compactions a week; hours locked out change by `
+      + `${h > 0 ? '+' : h < 0 ? '−' : ''}${d3.format('.1f')(Math.abs(h))}h over the period, so it pays off in compactions, not lockouts.`;
+  }
+}
+
+function table(id, ds, cols, fmt, filter, cls, key) {
+  const tb = document.querySelector(`#${id} tbody`);
+  const d = dash.data(ds);
+  tb.textContent = '';
+  if (d.status !== 'ok') return;
+  for (const r of d.data.filter(filter || (() => true))) {
+    const tr = tb.insertRow();
+    if (cls) tr.className = cls(r);
+    if (key) tr.dataset.key = key(r);
+    for (const c of cols) tr.insertCell().textContent = fmt[c] ? fmt[c](r) : r[c];
+  }
+}
+
+function tip(box) {
+  let t = box.querySelector('.tip');
+  if (!t) { t = document.createElement('div'); t.className = 'tip'; box.appendChild(t); }
+  return t;
+}
+
+function bars(id, ds, xKey, yKey, opts) {
+  const box = document.getElementById(id), d = dash.data(ds);
+  box.querySelector('svg')?.remove();
+  box.classList.toggle('dash-skeleton', d.status === 'loading');
+  box.querySelector('.fail')?.remove();
+  if (d.status === 'error' || d.status === 'connect') { box.classList.remove('dash-skeleton'); box.insertAdjacentHTML('afterbegin', '<span class="fail" style="min-height:220px">Failed to load</span>'); return; }
+  if (d.status !== 'ok') return;
+  const rows = d.data, W = box.clientWidth || 400, H = 220;
+  const ymax = Math.max(opts.ymin || 0, d3.max(rows, r => Number(r[yKey])) * 1.12);
+  const svg = d3.select(box).insert('svg', ':first-child').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+  const y = d3.scaleLinear([0, ymax], [H - 24, 14]).nice();
+  const g = svg.append('g');
+  const yt = y.ticks(4);
+  const probe = svg.append('text').attr('font-size', 12).text(opts.yfmt(yt[yt.length - 1]));
+  const ml = probe.node().getComputedTextLength() + 10; probe.remove();
+  const x = d3.scaleBand(rows.map(r => r[xKey]), [ml, W - 4]).padding(0.25);
+  g.selectAll('line.grid').data(yt).join('line').attr('x1', ml).attr('x2', W - 4).attr('y1', y).attr('y2', y).attr('stroke', 'var(--cds-chart-grid)');
+  g.selectAll('text.yt').data(yt).join('text').attr('x', ml - 6).attr('y', v => y(v) + 4).attr('text-anchor', 'end').attr('font-size', 12).attr('fill', 'var(--color-fg-muted)').text(opts.yfmt);
+  if (opts.ref != null) g.append('line').attr('x1', ml).attr('x2', W - 4).attr('y1', y(opts.ref)).attr('y2', y(opts.ref)).attr('stroke', 'var(--cds-chart-reference)').attr('stroke-dasharray', '4 3');
+  const step = Math.ceil(rows.length / Math.max(1, Math.floor((W - ml) / 56)));
+  g.selectAll('text.xt').data(rows.filter((_, i) => i % step === 0)).join('text').attr('x', r => x(r[xKey]) + x.bandwidth() / 2).attr('y', H - 6).attr('text-anchor', 'middle').attr('font-size', 12).attr('fill', 'var(--color-fg-muted)').text(r => opts.xfmt(r[xKey]));
+  const t = tip(box);
+  g.selectAll('rect').data(rows).join('rect')
+    .attr('x', r => x(r[xKey]) + Math.max(0, (x.bandwidth() - 32) / 2)).attr('width', Math.min(32, x.bandwidth()))
+    .attr('y', r => y(Number(r[yKey]))).attr('height', r => Math.max(0, y(0) - y(Number(r[yKey])))).attr('rx', 4)
+    .attr('fill', r => opts.color(r)).attr('opacity', r => opts.faded && opts.faded(r) ? 0.45 : 1)
+    .on('mousemove', (ev, r) => {
+      const [mx, my] = d3.pointer(ev, box);
+      t.innerHTML = ''; const a = document.createElement('div'); a.className = 'd'; a.textContent = opts.xfmt(r[xKey]); t.appendChild(a);
+      const b = document.createElement('div'); b.textContent = opts.tipfmt(r); t.appendChild(b);
+      t.style.display = 'block';
+      const tw = t.offsetWidth; t.style.left = Math.min(Math.max(0, mx + 10), W - tw) + 'px'; t.style.top = Math.max(0, my - 40) + 'px';
+    })
+    .on('mouseleave', () => { t.style.display = 'none'; });
+}
+
+dash.onData(() => {
+  tiles();
+  table('policies', 'policies', ['policy', 'compactions_per_week', 'lockouts_5h', 'lockouts_week', 'hours_locked', 'usage_pct', 'held_back_usd'],
+        {compactions_per_week: r => d3.format('.1f')(r.compactions_per_week), hours_locked: r => d3.format('.0f')(r.hours_locked) + 'h',
+         usage_pct: r => d3.format('.0f')(r.usage_pct) + '%', held_back_usd: r => '$' + d3.format(',.0f')(r.held_back_usd)},
+        null, r => r.policy === '830k + pacer' ? 'us' : '');
+  table('waste', 'headline', ['label', 'value', 'note'], {value: r => (wasteFmt[r.metric] || d3.format(','))(Number(r.value))},
+        r => WASTE.includes(r.metric), null, r => r.metric);
+  table('budgets', 'budgets', ['at', 'limit', 'budget_usd'],
+        {at: r => d3.timeFormat('%b %-d %H:%M')(new Date(r.at.replace(' ', 'T'))), budget_usd: r => '$' + d3.format(',.0f')(r.budget_usd)},
+        null, null, r => encodeURIComponent(r.at) + ',' + encodeURIComponent(r.limit));
+  bars('weekly', 'weekly', 'week_start', 'pct', {
+    ymin: 105, ref: 100, yfmt: v => v + '%', xfmt: s => d3.timeFormat('%b %-d')(new Date(s + 'T00:00')),
+    color: r => r.hit_limit ? 'var(--cds-chart-status-critical)' : dash.colors[0], faded: r => !r.complete,
+    tipfmt: r => `${d3.format('.0f')(r.pct)}% used · $${d3.format(',.0f')(r.usd)} ($${d3.format(',.0f')(r.fable_usd)} Fable)`
+  });
+  bars('fivehour', 'five_hour', 'bucket', 'windows', {
+    yfmt: d3.format(','), xfmt: s => s.replace('–', '-'),
+    color: r => r.bucket_start >= 100 ? 'var(--cds-chart-status-critical)' : dash.colors[0],
+    tipfmt: r => `${r.windows} windows`
+  });
+});
+</script>

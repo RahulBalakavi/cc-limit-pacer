@@ -10,7 +10,7 @@ Read-only. Replays your transcripts (same engine as simulate.py) and reads the p
 --fable-pct: your current "Weekly · Fable" % from /usage, to size the Fable allowance (it has no other source).
 --html writes a self-contained stats page (used by /cc-limit-pacer:stats).
 """
-import argparse, datetime as dt, html, json, os, statistics, time
+import argparse, datetime as dt, html, json, os, shutil, statistics, time
 import limit_pacer as g
 import backtest as b
 import simulate as s
@@ -345,6 +345,49 @@ at the cost of <b>${g8['held_back_usd']:,.0f}</b> of automated work held until t
 <p class="note">Dollar figures are API-list-price equivalents of your token use, which is what the plan limits meter. Budgets now: 5h ≈ ${r['budgets']['five_hour']:,.0f}, weekly ≈ ${r['budgets']['seven_day']:,.0f}. Readings over time: {_bp(r)}.</p>
 </div>"""
 
+def write_dashboard(r, out, five_pct=None, weekly_pct=None):
+    """The Dashboard artifact's datasets (one JSON file each) plus its page, into `out`. Limits now come from the
+    app's /usage reading when given, else the pacer's own estimate."""
+    os.makedirs(out, exist_ok=True)
+    iso = lambda t: dt.datetime.fromtimestamp(t).strftime('%Y-%m-%d %H:%M')
+    w, pc, f = r['wasted'], r['pacer'], r['fable']
+    est, _ = g.usage(r['generated'])
+    now_note = lambda p: 'from /usage' if p is not None else "the pacer's estimate"
+    pick = lambda p, k: p if p is not None else round((est.get(k) or {}).get('used_percentage', 0), 1)
+    reset = (est.get('seven_day') or {}).get('resets_at')
+    rows = {
+        'headline': [
+            {'metric': 'five_hour_pct', 'label': '5-hour window used', 'value': pick(five_pct, 'five_hour'), 'note': now_note(five_pct)},
+            {'metric': 'weekly_pct', 'label': 'Weekly limit used (all models)', 'value': pick(weekly_pct, 'seven_day'),
+             'note': now_note(weekly_pct) + (f' · resets {dt.datetime.fromtimestamp(reset):%a %b %-d %H:%M}' if reset else '')},
+            {'metric': 'fable_pct', 'label': 'Weekly Fable allowance used', 'value': f['pct_now'] if f.get('pct_now') is not None else 0,
+             'note': ('from /usage' if f.get('pct_now') is not None else 'unknown: pass --fable-pct') + ' · spare weeks start on Fable'},
+            {'metric': 'real_lockouts', 'label': 'Real lockouts', 'value': r['real_lockouts']['5h'] + r['real_lockouts']['week'],
+             'note': f"{r['real_lockouts']['5h']} session, {r['real_lockouts']['week']} weekly"},
+            {'metric': 'hours_locked', 'label': 'Hours locked out', 'value': round(w['hours_locked'], 1), 'note': 'real, from transcripts'},
+            {'metric': 'compactions', 'label': 'Auto-compactions', 'value': w['compactions'], 'note': 'real, in the period'},
+            {'metric': 'compaction_usd', 'label': 'Spent re-reading after compactions', 'value': round(w['compaction_usd'], 2), 'note': 'API-equivalent $'},
+            {'metric': 'advisor_usd', 'label': 'Spent on advisor consults', 'value': round(w['advisor_usd'], 2), 'note': 'API-equivalent $'},
+            {'metric': 'weekly_unused_avg_pct', 'label': 'Weekly allowance unused at reset', 'value': round(w['weekly_unused_avg_pct'] or 0, 1), 'note': 'average of full weeks'},
+            {'metric': 'fable_share_pct', 'label': 'Fable share of usage', 'value': round(100 * f['share'], 1), 'note': 'over the period'},
+            {'metric': 'hook_runs', 'label': 'Pacer hook runs', 'value': pc['runs'], 'note': f"{pc['sessions']} sessions"},
+            {'metric': 'hot_runs', 'label': 'Runs while hot', 'value': pc['hot_runs'], 'note': ''},
+            {'metric': 'held', 'label': 'Automated runs held', 'value': pc['held'], 'note': ''},
+            {'metric': 'p95_ms', 'label': 'Hook latency p95 (ms)', 'value': pc['p95_ms'], 'note': f"p50 {pc['p50_ms']} ms"}],
+        'policies': [{'policy': k, 'compactions_per_week': round(v['compactions_wk'], 1), 'lockouts_5h': v['lockouts_5h'],
+                      'lockouts_week': v['lockouts_week'], 'hours_locked': round(v['hours_locked'], 1), 'usage_pct': round(100 * v['usage'], 1),
+                      'held_back_usd': round(v['held_back_usd'], 2)} for k, v in r['policies'].items()],
+        'weekly': [{'week_start': dt.datetime.fromtimestamp(x['start']).strftime('%Y-%m-%d'), 'pct': round(x['pct'], 1), 'usd': round(x['usd'], 2),
+                    'fable_usd': round(x['fable_usd'], 2), 'complete': x['done'], 'hit_limit': x['locked']} for x in r['weekly']],
+        'five_hour': [{'bucket': f'{lo}–{lo + 10}%' if lo < 100 else '100%+', 'bucket_start': lo, 'windows': n}
+                      for lo, n in zip(list(range(0, 100, 10)) + [100], r['five_hour']['hist'])],
+        'budgets': [{'at': iso(t), 'limit': '5-hour' if k == 'five_hour' else 'weekly', 'budget_usd': round(v, 2)}
+                    for k, p in r['budget_points'].items() for t, v in p]}
+    for name, data in rows.items():
+        with open(os.path.join(out, f'{name}.json'), 'w') as fh: json.dump(data, fh)
+    shutil.copy(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'dashboard', 'index.html'), os.path.join(out, 'index.html'))
+    return sorted(rows)
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--days', type=float, default=23)
@@ -352,14 +395,27 @@ def main():
     ap.add_argument('--fable-pct', type=float)
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--html')
+    ap.add_argument('--dash', metavar='DIR', help="write the Dashboard artifact's datasets and page into DIR")
+    ap.add_argument('--dashboard-url', help='remember the Dashboard artifact that --dash output refreshes')
+    ap.add_argument('--five-hour-pct', type=float, help='"5-hour limit" %% from /usage, for the dashboard')
+    ap.add_argument('--weekly-pct', type=float, help='"Weekly · all models" %% from /usage, for the dashboard')
     a = ap.parse_args()
+    if a.dashboard_url:
+        g.save_json(g._p('dashboard.json'), {'url': a.dashboard_url, 't': time.time()})
+        return print(f'dashboard: {a.dashboard_url}')
     if a.since: a.days = (time.time() - dt.datetime.strptime(a.since, '%Y-%m-%d').timestamp()) / 86400
     r = audit(a.days, a.fable_pct)
     if a.html:
         with open(os.path.expanduser(a.html), 'w') as fh: fh.write(render_html(r))
         print(f'wrote {os.path.expanduser(a.html)}')
+    if a.dash:
+        out = os.path.expanduser(a.dash)
+        names = write_dashboard(r, out, a.five_hour_pct, a.weekly_pct)
+        url = g.load_json(g._p('dashboard.json'), {}).get('url')
+        print(f"wrote {out}: {', '.join(n + '.json' for n in names)}, index.html")
+        print(f'dashboard: {url}' if url else 'dashboard: none yet')
     if a.json: print(json.dumps({k: v for k, v in r.items() if k != 'pacer'} | {'pacer': {k: v for k, v in r['pacer'].items() if k != 'series'}}, default=str))
-    elif not a.html: print(text(r))
+    elif not (a.html or a.dash): print(text(r))
 
 if __name__ == '__main__':
     main()

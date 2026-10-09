@@ -154,6 +154,12 @@ assert r['real_lockouts']['5h'] == 1 and 0 < r['fable']['share'] < 1, (r['real_l
 assert set(r['policies']) == {'today', 'compact@830k', '830k + pacer'} and r['five_hour']['windows'] >= 1
 page = audit.render_html(r); txt = audit.text(r)
 assert page.startswith('<title>CC Limit Pacer Stats</title>') and 'None' not in page and 'WHAT YOU WASTED' in txt, txt
+d = os.path.join(tmp, 'dash'); names = audit.write_dashboard(r, d, five_pct=12, weekly_pct=3)
+rows = {n: json.load(open(os.path.join(d, n + '.json'))) for n in names}
+assert names == ['budgets', 'five_hour', 'headline', 'policies', 'weekly'] and os.path.exists(os.path.join(d, 'index.html'))
+assert next(x for x in rows['headline'] if x['metric'] == 'five_hour_pct')['value'] == 12 and len(rows['policies']) == 3, rows['headline'][:2]
+page = open(os.path.join(d, 'index.html')).read()
+assert all(f'data-source="{n}"' in page for n in names)                      # every dataset the page reads is shipped
 print('audit ok')
 
 # --- self-calibration: a lockout is a 100% reading; an estimate past 100% while still working raises the budget

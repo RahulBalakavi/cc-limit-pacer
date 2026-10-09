@@ -287,7 +287,10 @@ OK — nothing to look at
 - **A skipped restore:** you changed `model` or `advisorModel` while hot, so the pacer left your choice in place.
 - **Hooks not loaded:** no `UserPromptSubmit` runs were logged.
 
-## Audit and stats page
+## Audit and stats dashboard
+
+`/cc-limit-pacer:stats` refreshes a Dashboard artifact in place: `audit.py --dash DIR` writes its datasets (`headline`, `policies`, `weekly`, `five_hour`, `budgets`) and page (`dashboard/index.html`), and Claude uploads them. The dashboard URL is kept in `~/.claude/state/cc-limit-pacer/dashboard.json`. Without the Artifact tool it falls back to the static `--html` page.
+
 
 ![Stats page: limits now, what the pacer would have saved, waste, weekly and 5-hour usage, pacer activity](docs/stats.png)
 
