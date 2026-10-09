@@ -137,8 +137,9 @@ def statusline_rl(now):
     rl = st.get('rate_limits') or {}
     return rl if rl and now - st.get('t', 0) < RL_FRESH_S else None
 
-def calibrate_from(rl, calls, now):
-    """Learn budget B per window = local spend in window / used%. Keeps an EMA so one odd reading doesn't swing it."""
+def calibrate_from(rl, calls, now, w=0.3):
+    """Learn budget B per window = local spend in window / used%. `w` < 1 keeps an EMA so frequent statusline
+    readings don't swing it; a one-off reading from /usage (w=1) replaces the budget outright."""
     cal = load_json(_p('calibration.json'), {})
     for key, span in (('five_hour', W5), ('seven_day', W7)):
         r = rl.get(key) or {}
@@ -150,7 +151,7 @@ def calibrate_from(rl, calls, now):
         if local <= 0: continue
         b = local / (pct / 100)
         old = cal.get(key)
-        cal[key] = b if not old else 0.7 * old + 0.3 * b
+        cal[key] = b if not old else (1 - w) * old + w * b
     cal['t'] = now
     save_json(_p('calibration.json'), cal)
     return cal
@@ -207,6 +208,23 @@ def estimate(calls, now, cal):
         rl['seven_day'] = {'used_percentage': 100 * spend(calls, s7, now) / cal['seven_day'], 'resets_at': s7 + W7}
     return rl
 
+CLAUDE_JSON = os.environ.get('CLAUDE_JSON', os.path.expanduser('~/.claude.json'))
+
+def app_reading(calls):
+    """Claude Code caches the account's real /usage reading in ~/.claude.json (`cachedUsageUtilization`) whenever
+    /usage is opened. Each new one for this account recalibrates the budgets exactly; no keychain, no network."""
+    d = load_json(CLAUDE_JSON, {})
+    c = d.get('cachedUsageUtilization') or {}
+    t = (c.get('fetchedAtMs') or 0) / 1000
+    cal = load_json(_p('calibration.json'), {})
+    if t <= cal.get('app_reading_t', 0) or c.get('accountUuid') != (d.get('oauthAccount') or {}).get('accountUuid'): return
+    u = c.get('utilization') or {}
+    rl = {k: {'used_percentage': u[k]['utilization'], 'resets_at': _ts(u[k]['resets_at'])}
+          for k in ('five_hour', 'seven_day') if (u.get(k) or {}).get('utilization') is not None and u[k].get('resets_at')}
+    cal = calibrate_from(rl, calls, t, w=1.0)
+    cal['app_reading_t'] = t
+    save_json(_p('calibration.json'), cal)
+
 def usage(now=None):
     """(rate_limits, source). Statusline when fresh (and it recalibrates us), else local estimate."""
     now = now or time.time()
@@ -215,6 +233,8 @@ def usage(now=None):
     if rl:
         calibrate_from(rl, calls, now)
         return rl, 'statusline'
+    try: app_reading(calls)
+    except (KeyError, TypeError, ValueError): pass          # cache shape changed: keep the last budgets
     cal = load_json(_p('calibration.json'), {})
     rl = raise_on_overrun(calls, now, cal, estimate(calls, now, cal))
     return (rl, 'local-estimate') if rl else ({}, 'uncalibrated')
@@ -471,7 +491,7 @@ def cmd_calibrate(a):
     rl = {'five_hour': {'used_percentage': a.five_hour, 'resets_at': _parse_local(a.five_hour_reset) if a.five_hour_reset
                         else (five_hour_start(scan(now=now), now) or now) + W5},
           'seven_day': {'used_percentage': a.weekly, 'resets_at': _parse_local(a.weekly_reset)}}
-    cal = calibrate_from(rl, scan(now=now), now)
+    cal = calibrate_from(rl, scan(now=now), now, w=1.0)
     print('budgets (API-equivalent $):', {k: round(cal[k], 2) for k in ('five_hour', 'seven_day') if k in cal})
     est = estimate(scan(now=now), now, cal)
     print('local estimate now:', {k: f"{v['used_percentage']:.0f}%" for k, v in est.items()}, '(should match what you entered)')

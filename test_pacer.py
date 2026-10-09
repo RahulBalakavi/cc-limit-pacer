@@ -1,6 +1,6 @@
 """One runnable check: python3 test_pacer.py  (builds a fake ~/.claude in a temp dir; touches nothing real)."""
 import json, os, sys, tempfile, time
-tmp = tempfile.mkdtemp(); os.environ['CLAUDE_HOME'] = tmp
+tmp = tempfile.mkdtemp(); os.environ['CLAUDE_HOME'] = tmp; os.environ['CLAUDE_JSON'] = os.path.join(tmp, 'claude.json')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import limit_pacer as g, backtest as b
 
@@ -177,6 +177,15 @@ assert json.load(open(g._p('calibration.json')))['five_hour'] == 0.1 * w5      #
 cal = {'five_hour': 0.01, 'seven_day': 1e6, 'five_anchor': now + 3600}
 rl2 = g.raise_on_overrun(c3, now, cal, g.estimate(c3, now, cal))
 assert rl2['five_hour']['used_percentage'] == 100 and cal['five_hour'] > 0.01 and cal['learned'][-1]['from'] == 'overrun', cal
+g.save_json(g._p('calibration.json'), {'five_hour': 1e6, 'seven_day': 1e9})   # big enough that the overrun rule stays out
+def app_cache(pct, t, acct='a1'):
+    g.save_json(g.CLAUDE_JSON, {'oauthAccount': {'accountUuid': 'a1'}, 'cachedUsageUtilization': {'fetchedAtMs': t * 1000, 'accountUuid': acct,
+                'utilization': {'five_hour': {'utilization': pct, 'resets_at': iso(rs.timestamp())}, 'seven_day': None}}})
+app_cache(40, now, acct='other'); g.usage(now)
+assert json.load(open(g._p('calibration.json')))['five_hour'] == 1e6                  # another account's reading: ignored
+app_cache(40, now); g.usage(now)
+w5n = g.spend(g.scan(now=now), rs.timestamp() - g.W5 - 600, now)
+assert abs(json.load(open(g._p('calibration.json')))['five_hour'] - w5n / 0.4) < 1e-6   # real /usage reading replaces the budget
 print('calibration ok')
 
 # --- simulate: a 5h window snaps to a known real reset and keeps only the spend that belongs to it
