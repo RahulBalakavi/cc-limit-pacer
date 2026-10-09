@@ -27,7 +27,9 @@ RL_FILE = os.path.join(CLAUDE, 'state', 'rate_limits.json')   # written by the s
 HOOK_PATH = os.path.join(CLAUDE, 'hooks', 'limit_pacer.py')
 W5, W7 = 5 * 3600, 7 * 86400
 CFG_DEFAULTS = {'verbose': False, 'levers': True, 'hold_batch': True, 'use_statusline': True, 'mode': 'enforce', 'floor': 500_000, 'hard': 800_000, 'near_reset_s': 1200, 'min_used_pct': 50, 'keep_below_pace': 1.0,
-                'spare_model': 'fable[1m]', 'spare_below': 90}
+                'spare_model': 'fable[1m]', 'spare_below': 90,
+                'compact_tight': 400_000, 'resume_guard': 'confirm', 'resume_min_ctx': 150_000, 'pinned': []}
+KEYS = {'model': 'model', 'advisor': 'advisorModel', 'compact': 'autoCompactWindow'}   # adjust's names -> settings keys
 FIRE_EARLY = 32_000   # Claude Code compacts ~32k below autoCompactWindow (measured at 100k and 600k windows)
 RL_FRESH_S = 15 * 60
 
@@ -297,16 +299,24 @@ def baseline():
     baks = sorted(glob.glob(_p('settings.bak-*')))
     return {k: load_json(baks[0], {}).get(k) for k in ('model', 'advisorModel')} if baks else None
 
-def hot_levers(s): return {'model': step_down(s.get('model')), 'advisorModel': 'off'}
+def hot_levers(s, tight=None):
+    """While hot: one model tier down, advisor off, and compaction pulled in to `tight` tokens (big contexts are
+    re-read every turn, so a smaller one stretches a tight week)."""
+    w = {'model': step_down(s.get('model')), 'advisorModel': 'off'}
+    if tight and (s.get('autoCompactWindow') or 10**9) > tight + FIRE_EARLY: w['autoCompactWindow'] = tight + FIRE_EARLY
+    return w
 
-def apply_levers(mode, st, s, baseline=None, spare_model='fable[1m]'):
+def apply_levers(mode, st, s, baseline=None, spare_model='fable[1m]', pinned=(), tight=None):
     """Write (or restore) settings `model` / `advisorModel` in `s`; new sessions read them at start.
     mode: 'hot' (step down, advisor off), 'spare' (spare_model), or None (restore). True/False = 'hot'/None.
     Restores only keys still holding the value we wrote, so a user's own /model choice wins.
     `baseline` (the model/advisor at install) undoes a hot signature left behind without our state.
+    `pinned` settings keys are the user's (set with `adjust set`) and never written; `st['declined']` is a mode the
+    user kept or undid with `adjust`, left alone until the mode changes.
     Returns a list of changes for the log. Caller holds the state lock."""
     mode = {True: 'hot', False: None}.get(mode, mode)
     changes = []
+    if st.get('declined') and st['declined'] != mode: st.pop('declined')
     if st.get('wrote') and st.get('mode', 'hot') != mode:
         for k, v in st['wrote'].items():
             if s.get(k) == v:
@@ -323,8 +333,9 @@ def apply_levers(mode, st, s, baseline=None, spare_model='fable[1m]'):
             changes.append({'key': k, 'from': s.get(k), 'to': baseline.get(k), 'why': 'orphaned step-down'})
             if baseline.get(k) is None: s.pop(k, None)
             else: s[k] = baseline[k]
-    if mode and not st.get('wrote'):
-        wrote = hot_levers(s) if mode == 'hot' else {'model': spare_model}
+    if mode and not st.get('wrote') and st.get('declined') != mode:
+        wrote = hot_levers(s, tight) if mode == 'hot' else {'model': spare_model}
+        wrote = {k: v for k, v in wrote.items() if k not in pinned}
         st.update(saved={k: s.get(k) for k in wrote}, wrote=wrote, mode=mode)
         for k, v in wrote.items():
             if s.get(k) != v: changes.append({'key': k, 'from': s.get(k), 'to': v})
@@ -378,7 +389,7 @@ def _pace(ev, t0):
         if cfg.get('levers', True):
             s = load_json(SETTINGS, {})
             changes = apply_levers('hot' if hot else 'spare' if spare else None, st, s,
-                                   baseline(), cfg.get('spare_model'))
+                                   baseline(), cfg.get('spare_model'), cfg.get('pinned', ()), cfg.get('compact_tight'))
             if any('to' in c for c in changes): save_json(SETTINGS, s)
         st['hot'] = hot; st['spare'] = spare; st['t'] = now
         save_json(_p('pacer.json'), st)
@@ -407,13 +418,16 @@ def _pace(ev, t0):
     if verbose or len(rec) > 6:                       # 6 = the always-present fields; more means something happened
         log('pacer.jsonl', rec)
     out, msgs = {}, []
-    if hot != was:
-        msgs.append(f"cc-limit-pacer: {'running hot' if hot else 'back under pace'} — {pc}. "
-                    + ('New sessions start one model tier down with the advisor off; batch runs are held.'
-                       if hot else 'Model and advisor settings restored.'))
-    elif spare != was_spare:
-        msgs.append(f"cc-limit-pacer: {'the week has allowance to spare' if spare else 'spare-week mode off'} — {pc}. "
-                    + (f"New sessions start on {cfg['spare_model']}." if spare else 'Model setting restored.'))
+    if hot != was or spare != was_spare or any('to' in c for c in changes):
+        why = ('running hot' if hot else 'the week has allowance to spare' if spare else 'back under pace')
+        msgs.append(f"cc-limit-pacer: {why} — {pc}." + (f" Adjusted for new sessions: {describe(changes)}." if changes else '')
+                    + (' Automated runs are held.' if hot and cfg.get('hold_batch', True) else '')
+                    + ' Review, keep, undo or change: /cc-limit-pacer:adjust')
+    guard = resume_guard(ev, cfg, now) if ev.get('hook_event_name') == 'UserPromptSubmit' and not held else None
+    if guard:
+        log('pacer.jsonl', {'t': now, 'v': VERSION, 'event': 'resume_guard', 'session': ev.get('session_id'), **guard['rec']})
+        if guard['block']: out = {'decision': 'block', 'reason': guard['text']}
+        else: msgs.append(guard['text'])
     if held:
         hot_resets = [rl[k]['resets_at'] for k, (p, _) in paces(rl, now).items() if p >= EXIT[0]]
         resets = min(hot_resets or [v['resets_at'] for v in rl.values() if v.get('resets_at')] or [now])
@@ -421,6 +435,55 @@ def _pace(ev, t0):
                f"retry after {dt.datetime.fromtimestamp(resets):%a %H:%M} or set LIMIT_PACER_ALLOW=1"}
     if msgs: out['systemMessage'] = ' '.join(msgs)
     return out
+
+def describe(changes):
+    """'model opus[1m] → sonnet[1m], compaction 862k → 432k' for a banner."""
+    name = {'model': 'model', 'advisorModel': 'advisor', 'autoCompactWindow': 'compaction'}
+    fmt = lambda k, v: 'default' if v is None else f'{(v - FIRE_EARLY) // 1000}k' if k == 'autoCompactWindow' and isinstance(v, int) else str(v)
+    return ', '.join(f"{name.get(c['key'], c['key'])} {fmt(c['key'], c.get('from'))} → {fmt(c['key'], c['to'])}" for c in changes if 'to' in c)
+
+def last_turn(path):
+    """(ts, usage, model) of the session's last API call, read from the tail of its transcript."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, 2); f.seek(max(0, f.tell() - 1_000_000)); tail = f.read().decode(errors='ignore')
+    except (OSError, TypeError):
+        return None
+    for line in reversed(tail.splitlines()):
+        if '"usage"' not in line: continue
+        try: d = json.loads(line)
+        except ValueError: continue
+        m = d.get('message') or {}
+        if d.get('type') == 'assistant' and m.get('usage') and d.get('timestamp'): return _ts(d['timestamp']), m['usage'], m.get('model')
+    return None
+
+def resume_guard(ev, cfg, now):
+    """First prompt to a big session idle past its cache lifetime re-reads the whole context at cache-write price.
+    'confirm' holds that prompt once with the cost (send it again to go on); 'warn' only shows the cost."""
+    mode, prompt = cfg.get('resume_guard', 'confirm'), str(ev.get('prompt', '')).lstrip()
+    if mode == 'off' or prompt.startswith('/') or os.environ.get('LIMIT_PACER_ALLOW'): return None
+    lt = last_turn(ev.get('transcript_path'))
+    if not lt: return None
+    ts, u, model = lt
+    ttl = 3600 if (u.get('cache_creation') or {}).get('ephemeral_1h_input_tokens') else 300
+    ctx = u.get('input_tokens', 0) + u.get('cache_read_input_tokens', 0) + u.get('cache_creation_input_tokens', 0)
+    if now - ts <= ttl or ctx < cfg.get('resume_min_ctx', 150_000): return None
+    i, _, cr = rates(model)
+    usd = ctx * (2 * i if ttl == 3600 else 1.25 * i)               # the whole prefix written to cache again
+    cal = load_json(_p('calibration.json'), {})
+    share = ', '.join(f'{100 * usd / cal[k]:.1f}% of your {lbl}' for k, lbl in (('seven_day', 'week'), ('five_hour', '5-hour window')) if cal.get(k))
+    seen = load_json(_p('resume.json'), {})
+    sid = ev.get('session_id') or ev.get('transcript_path')
+    rec = {'idle_h': round((now - ts) / 3600, 1), 'ctx': ctx, 'usd': round(usd, 2), 'mode': mode}
+    head = (f"cc-limit-pacer: this session was idle {(now - ts) / 3600:.1f}h, so its {ctx // 1000}k-token context is no longer cached. "
+            f"Continuing re-reads all of it: about ${usd:.2f}" + (f" ({share})" if share else '') + '.')
+    if mode == 'warn': return {'block': False, 'text': head + ' Change: /cc-limit-pacer:adjust', 'rec': rec}
+    if now - seen.get(sid, 0) < 900:                                # sent again after the hold: go ahead
+        seen.pop(sid, None); save_json(_p('resume.json'), seen)
+        return {'block': False, 'text': f'cc-limit-pacer: continuing; this turn re-reads the {ctx // 1000}k context (~${usd:.2f}).', 'rec': {**rec, 'confirmed': True}}
+    seen = {k: v for k, v in seen.items() if now - v < 900}; seen[sid] = now; save_json(_p('resume.json'), seen)
+    return {'block': True, 'rec': rec, 'text': head + ' Send the same prompt again within 15 min to continue, or /clear to start this '
+            'task fresh. Change how this works: /cc-limit-pacer:adjust resume warn|off'}
 
 # ---------------------------------------------------------------- CLI
 
@@ -516,6 +579,61 @@ def cmd_status(a):
         print(f"lockouts: {len(before)} in the 30d before install ({len(before) / 30 * 7:.1f}/wk); "
               f"{len(after)} since install ({len(after) / days * 7:.1f}/wk over {days:.1f}d)")
 
+def cmd_adjust(a):
+    """Review what the pacer has changed, and keep, undo or override it."""
+    import fcntl
+    cfg = config(); now = time.time()
+    with open(_p('settings.lock'), 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        st, s = load_json(_p('pacer.json'), {}), load_json(SETTINGS, {})
+        act, args = (a.action or 'show'), a.args
+        if act == 'keep' and st.get('wrote'):                      # values stay as they are, now the user's
+            st['declined'] = st.pop('mode', 'hot'); st.pop('wrote'); st.pop('saved', None)
+            print('kept: the pacer will not restore these until the mode changes')
+        elif act == 'undo' and st.get('wrote'):
+            mode = st.get('mode', 'hot'); ch = apply_levers(None, st, s); st['declined'] = mode
+            save_json(SETTINGS, s); print(f'undone: {describe(ch) or "nothing to restore"}; the pacer leaves this {mode} mode alone')
+        elif act == 'set' and args:
+            for kv in args:
+                k, _, v = kv.partition('='); key = KEYS.get(k)
+                if not key or not v: raise SystemExit(f'set takes model=… advisor=… compact=…, not {kv!r}')
+                val = (int(float(v.lower().rstrip('k')) * (1000 if v.lower().endswith('k') else 1)) + FIRE_EARLY) if key == 'autoCompactWindow' else v
+                s[key] = val
+                st.get('wrote', {}).pop(key, None); st.get('saved', {}).pop(key, None)
+                if key not in cfg['pinned']: cfg['pinned'].append(key)
+            save_json(SETTINGS, s); print(f"set and pinned (the pacer won't touch them): {', '.join(args)}")
+        elif act == 'auto' and args:
+            cfg['pinned'] = [k for k in cfg['pinned'] if k not in {KEYS.get(x, x) for x in args}]
+            print(f"back to automatic: {', '.join(args)}")
+        elif act == 'resume' and args and args[0] in ('confirm', 'warn', 'off'):
+            cfg['resume_guard'] = args[0]; print(f'idle-resume guard: {args[0]}')
+        elif act == 'spare' and args and args[0] in ('on', 'off'):
+            cfg['spare_model'] = 'fable[1m]' if args[0] == 'on' else ''; print(f'spare-week model switch: {args[0]}')
+        elif act == 'tight' and args:
+            cfg['compact_tight'] = int(float(args[0].lower().rstrip('k')) * (1000 if args[0].lower().endswith('k') else 1))
+            print(f"compaction while hot: {cfg['compact_tight'] // 1000}k")
+        elif act != 'show':
+            raise SystemExit('usage: adjust [show | keep | undo | set model=… advisor=… compact=600k | auto model|advisor|compact '
+                             '| resume confirm|warn|off | spare on|off | tight 400k]')
+        save_json(_p('pacer.json'), st); save_json(_p('config.json'), cfg)
+    mode = 'hot' if st.get('hot') else 'spare week' if st.get('spare') else 'normal'
+    print(f"\nmode: {mode}" + (f"  (you kept/undid the {st['declined']} adjustments)" if st.get('declined') else ''))
+    for name, key in KEYS.items():
+        v = s.get(key); owned = key in st.get('wrote', {}) and st['wrote'][key] == v
+        shown = f'{(v - FIRE_EARLY) // 1000}k' if key == 'autoCompactWindow' and isinstance(v, int) else v   # where it compacts
+        print(f"  {name:8} {str(shown):14} " + ('pinned by you' if key in cfg['pinned'] else
+              f"adjusted by the pacer (was {st['saved'].get(key)})" if owned else 'yours'))
+    print(f"  idle-resume guard: {cfg['resume_guard']} (sessions over {cfg['resume_min_ctx'] // 1000}k)   "
+          f"spare-week model: {cfg['spare_model'] or 'off'}   compaction while hot: {cfg['compact_tight'] // 1000}k")
+    recent = []
+    if os.path.exists(_p('pacer.jsonl')):
+        for l in open(_p('pacer.jsonl')):
+            try: r = json.loads(l)
+            except ValueError: continue
+            if r.get('settings') and any('to' in c for c in r['settings']): recent.append(f"{dt.datetime.fromtimestamp(r['t']):%a %b %-d %H:%M}  {describe(r['settings'])}")
+            elif r.get('event') == 'resume_guard': recent.append(f"{dt.datetime.fromtimestamp(r['t']):%a %b %-d %H:%M}  resume after {r['idle_h']}h idle, {r['ctx'] // 1000}k context, ~${r['usd']}" + (' (held)' if not r.get('confirmed') and r.get('mode') == 'confirm' else ''))
+    if recent: print('recent adjustments:\n  ' + '\n  '.join(recent[-8:]))
+
 def cmd_verbose(a):
     cfg = config()
     if a.state: cfg['verbose'] = a.state == 'on'; save_json(_p('config.json'), cfg)
@@ -595,11 +713,13 @@ def main():
     c.add_argument('--weekly-reset', required=True, help='local time the week resets, "YYYY-MM-DD HH:MM"')
     c.add_argument('--five-hour-reset', help='local time the 5h window resets (default: inferred from transcripts)')
     sp.add_parser('status')
+    ad = sp.add_parser('adjust', help='review what the pacer changed; keep, undo or override it')
+    ad.add_argument('action', nargs='?'); ad.add_argument('args', nargs='*')
     v = sp.add_parser('verbose', help='log every hook run in full (on) or only eventful runs (off, default)'); v.add_argument('state', nargs='?', choices=['on', 'off'])
     r = sp.add_parser('report', help='bug checklist over recent hook logs'); r.add_argument('--hours', type=float, default=24)
     a = ap.parse_args()
     sys.exit({'install': cmd_install, 'uninstall': cmd_uninstall, 'calibrate': cmd_calibrate, 'status': cmd_status,
-              'report': cmd_report, 'verbose': cmd_verbose}[a.cmd](a) or 0)
+              'report': cmd_report, 'verbose': cmd_verbose, 'adjust': cmd_adjust}[a.cmd](a) or 0)
 
 if __name__ == '__main__':
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))

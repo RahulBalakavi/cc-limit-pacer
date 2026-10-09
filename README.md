@@ -235,6 +235,9 @@ python3 limit_pacer.py uninstall
 - **Settings:** `install` backs up `~/.claude/settings.json`, sets `autoCompactWindow`, and adds a `SessionStart` and a `UserPromptSubmit` hook. Each runs in about 0.2s.
 - **While hot:** it writes `model` one tier down and `advisorModel: "off"` into your settings, so new sessions pick them up. It shows a one-line notice when it switches state.
 - **When it cools down:** it restores those settings, unless you changed them yourself in the meantime.
+- **Tighter compaction while hot:** compaction moves to `compact_tight` (400k) for new sessions, since every turn re-reads the whole context; it goes back when usage cools.
+- **Idle-resume guard:** the first prompt to a session over `resume_min_ctx` (150k) that sat idle past its cache lifetime (1 hour, or 5 minutes for a 5-minute cache) re-reads the whole context at cache-write price. With `resume_guard: confirm` that prompt is held once with the cost (send it again within 15 minutes to go on, or `/clear`); `warn` only shows the cost; `off` disables it. On one heavy user's month this re-reading was about 19% of all usage.
+- **Banners and `/cc-limit-pacer:adjust`:** every change the pacer makes shows a one-line banner naming each setting and its old and new value. `/cc-limit-pacer:adjust` lists every setting with who controls it and the recent adjustments; `keep` accepts the current adjustments, `undo` restores them and leaves that mode alone until it changes, `set model=… advisor=… compact=600k` pins your own value, and `auto <name>` hands it back.
 - **Spare week:** once a quarter of the week has passed, if it is on track to end below `spare_below`% of the weekly limit, new sessions start on `spare_model` (Fable by default). The allowance that would go unused at reset buys the best model. It switches back when the projection reaches `spare_below`+5% or usage runs hot.
 - **Orphaned step-down:** if settings still hold the hot-mode pair (one tier down, advisor `off`) but the pacer has no record of writing them, it restores the model and advisor you had at install.
 - **Self-calibration:** every lockout Claude Code writes into a transcript is a 100% reading, so the pacer refits that window's budget from it (a jump of more than 2x is treated as another account and ignored). An estimate past 100% while calls are still going through raises the budget too. Whenever Claude Code caches a fresh `/usage` reading for your account in `~/.claude.json` (it does each time `/usage` is opened in the terminal), that reading replaces the budgets outright, and `/cc-limit-pacer:stats` and `:status` feed in the desktop app's reading when the session has a usage tool. `calibrate` stays available for a manual reset; refits are listed under `learned` in `calibration.json`.
@@ -246,6 +249,10 @@ python3 limit_pacer.py uninstall
 |---|---|---|
 | `levers` | `true` | switch model and advisor while hot |
 | `hold_batch` | `true` | hold automated runs while hot |
+| `compact_tight` | `400000` | where new sessions compact while hot |
+| `resume_guard` | `confirm` | idle-resume guard: `confirm`, `warn` or `off` |
+| `resume_min_ctx` | `150000` | smallest context the guard stops for |
+| `pinned` | `[]` | settings keys you set with `adjust set`; never written by the pacer |
 | `spare_model` | `fable[1m]` | model for new sessions in a spare week. `""` turns spare-week mode off |
 | `spare_below` | `90` | projected end-of-week % below which a week counts as spare |
 | `use_statusline` | `true` | trust the statusline's `rate_limits`. Set `false` if several accounts share one `~/.claude` |

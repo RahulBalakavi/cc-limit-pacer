@@ -107,6 +107,36 @@ assert json.load(open(g.SETTINGS))['advisorModel'] == 'off'                    #
 p = subprocess.run([sys.executable, g.__file__, 'pace'], capture_output=True, text=True, env={**os.environ, 'CLAUDE_CODE_ENTRYPOINT': 'sdk-cli'},
                    input=json.dumps({'hook_event_name': 'UserPromptSubmit', 'cwd': '/private/tmp/x', 'prompt': '/cc-limit-pacer:status'}))
 assert 'block' not in p.stdout                                                   # our own commands are never held
+
+# hot also pulls compaction in; pinned keys are never written; banners name every change
+s = {'model': 'opus[1m]', 'advisorModel': 'opus', 'autoCompactWindow': 862_000}; st = {}
+ch = g.apply_levers('hot', st, s, tight=400_000, pinned=['advisorModel'])
+assert s == {'model': 'sonnet[1m]', 'advisorModel': 'opus', 'autoCompactWindow': 432_000}, s
+assert g.describe(ch) == 'model opus[1m] → sonnet[1m], compaction 830k → 400k', g.describe(ch)
+g.apply_levers(None, st, s); assert s['autoCompactWindow'] == 862_000 and s['model'] == 'opus[1m]'
+st = {'declined': 'hot'}; assert g.apply_levers('hot', st, s, tight=400_000) == [] and s['model'] == 'opus[1m]'   # user said no
+g.apply_levers(None, st, s); assert 'declined' not in st                      # ...until the mode changes
+
+# idle-resume guard: a big session idle past its cache lifetime is held once with its cost, then goes through
+tp = os.path.join(tmp, 'resume.jsonl')
+def turn(ago, ctx, h1=True):
+    u = {'input_tokens': 5, 'cache_read_input_tokens': ctx, 'cache_creation_input_tokens': 0, 'output_tokens': 100,
+         'cache_creation': {'ephemeral_1h_input_tokens': 1 if h1 else 0, 'ephemeral_5m_input_tokens': 0}}
+    with open(tp, 'w') as fh: fh.write(json.dumps({'type': 'assistant', 'timestamp': iso(now - ago), 'message': {'model': 'claude-opus-5-5', 'usage': u}}) + '\n')
+ev = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'r1', 'transcript_path': tp, 'prompt': 'carry on'}
+cfg = {**g.CFG_DEFAULTS}
+turn(1800, 600_000); assert g.resume_guard(ev, cfg, now) is None                 # 30 min idle: 1h cache still warm
+turn(1800, 600_000, h1=False); assert g.resume_guard(ev, cfg, now)['block']      # ...but a 5-minute cache has expired
+turn(2 * 3600, 600_000)
+assert g.resume_guard({**ev, 'prompt': '/clear'}, cfg, now) is None              # commands pass
+turn(2 * 3600, 50_000); assert g.resume_guard(ev, cfg, now) is None              # small context: not worth a stop
+turn(2 * 3600, 600_000)
+r1 = g.resume_guard({**ev, 'session_id': 'r2'}, cfg, now)
+assert r1['block'] and '$4.80' in r1['text'] and 'again' in r1['text'], r1    # 600k at the 1h write price ($8/M)
+r2 = g.resume_guard({**ev, 'session_id': 'r2'}, cfg, now + 60)
+assert not r2['block'] and r2['rec'].get('confirmed'), r2                        # sent again: goes through
+assert not g.resume_guard(ev, {**cfg, 'resume_guard': 'warn'}, now)['block']
+assert g.resume_guard(ev, {**cfg, 'resume_guard': 'off'}, now) is None
 print('pacer ok')
 
 # --- logging: every hook run is logged with timing; a crash is logged with a traceback and never blocks the prompt
@@ -129,6 +159,23 @@ assert len(open(g._p('pacer.jsonl')).readlines()) == n + 1                      
 run_hook('SessionStart', '/Users/me/project', LIMIT_PACER_VERBOSE='1')
 r = json.loads(open(g._p('pacer.jsonl')).readlines()[-1])
 assert len(open(g._p('pacer.jsonl')).readlines()) == n + 2 and 'session' in r and 'budgets' in r, r   # verbose: every run, full detail
+# adjust: review, keep, undo and override what the pacer changed
+def adj(*args):
+    p = subprocess.run([sys.executable, g.__file__, 'adjust', *args], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    return p.stdout
+g.save_json(g.SETTINGS, {'model': 'opus[1m]', 'advisorModel': 'opus', 'autoCompactWindow': 862_000})
+g.save_json(g._p('pacer.json'), {})
+run_hook('SessionStart', '/Users/me/project', LIMIT_PACER_FORCE='hot')
+assert 'adjusted by the pacer (was opus[1m])' in adj(), adj()
+assert 'undone' in adj('undo') and json.load(open(g.SETTINGS))['model'] == 'opus[1m]'
+run_hook('SessionStart', '/Users/me/project', LIMIT_PACER_FORCE='hot')
+assert json.load(open(g.SETTINGS))['model'] == 'opus[1m]'                      # undone mode stays undone
+out = adj('set', 'compact=600k', 'model=haiku')
+st_s = json.load(open(g.SETTINGS))
+assert st_s['autoCompactWindow'] == 632_000 and st_s['model'] == 'haiku' and 'pinned by you' in out, (st_s, out)
+assert 'resume guard: warn' in adj('resume', 'warn').replace('idle-resume guard', 'resume guard')
+assert 'automatic' in adj('auto', 'model', 'compact') and g.config()['pinned'] == []
 print('logging ok')
 
 p = subprocess.run([sys.executable, g.__file__, 'report', '--hours', '1'], capture_output=True, text=True)
