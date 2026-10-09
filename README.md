@@ -335,6 +335,7 @@ HOW MUCH OF EACH LIMIT YOU USE
 
 ## What's verified
 
+- **The idle-resume guard can't see forked sessions.** `claude --resume <id> --fork-session` (or forking from the app) writes the copied history into the new transcript only after the prompt hook has run, and stamps the copied lines with the fork time, so the guard sees no idle gap and the full re-read goes through. Plain resumes are covered. To resume a large idle session cheaply, start fresh with `/clear` instead of forking it.
 - **Model and advisor changes only reach new sessions.** Changing `model` in settings during a run doesn't affect it. `advisorModel: "off"` turns the advisor off; `null` and `""` do not.
 - **Held headless runs:** a held `claude -p` run returns the hold message as its result and **exits 0**. Batch scripts should check the result text.
 - **Compaction timing:** Claude Code compacts about 32k tokens below `autoCompactWindow`. If one turn jumps past the model's real window, the session ends with `Prompt is too long` and nothing recovers it.
