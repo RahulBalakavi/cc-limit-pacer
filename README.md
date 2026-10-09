@@ -235,6 +235,9 @@ python3 limit_pacer.py uninstall
 - **Settings:** `install` backs up `~/.claude/settings.json`, sets `autoCompactWindow`, and adds a `SessionStart` and a `UserPromptSubmit` hook. Each runs in about 0.2s.
 - **While hot:** it writes `model` one tier down and `advisorModel: "off"` into your settings, so new sessions pick them up. It shows a one-line notice when it switches state.
 - **When it cools down:** it restores those settings, unless you changed them yourself in the meantime.
+- **Spare week:** once a quarter of the week has passed, if it is on track to end below `spare_below`% of the weekly limit, new sessions start on `spare_model` (Fable by default). The allowance that would go unused at reset buys the best model. It switches back when the projection reaches `spare_below`+5% or usage runs hot.
+- **Orphaned step-down:** if settings still hold the hot-mode pair (one tier down, advisor `off`) but the pacer has no record of writing them, it restores the model and advisor you had at install.
+- **Self-calibration:** every lockout Claude Code writes into a transcript is a 100% reading, so the pacer refits that window's budget from it (a jump of more than 2x is treated as another account and ignored). An estimate past 100% while calls are still going through raises the budget too. `calibrate` stays available for a manual reset; refits are listed under `learned` in `calibration.json`.
 - **Held runs:** automated prompts are refused with `holding automated run … retry after Mon 04:40`. When a held run needs to go now, set `LIMIT_PACER_ALLOW=1`.
 - **Logs:** every hook run is written to `~/.claude/state/cc-limit-pacer/pacer.jsonl`.
 - **What the replay leaves out:** quality loss from compacting or from cheaper models, and held work running later, so the lockout gains are optimistic.
@@ -243,6 +246,8 @@ python3 limit_pacer.py uninstall
 |---|---|---|
 | `levers` | `true` | switch model and advisor while hot |
 | `hold_batch` | `true` | hold automated runs while hot |
+| `spare_model` | `fable[1m]` | model for new sessions in a spare week. `""` turns spare-week mode off |
+| `spare_below` | `90` | projected end-of-week % below which a week counts as spare |
 | `use_statusline` | `true` | trust the statusline's `rate_limits`. Set `false` if several accounts share one `~/.claude` |
 
 ## Logs and the daily check

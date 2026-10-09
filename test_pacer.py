@@ -75,6 +75,21 @@ ch = g.apply_levers(False, st, s)
 assert (s['model'], s['advisorModel']) == ('haiku', 'opus'), s               # their pick survives
 assert any(c.get('skipped') for c in ch), ch                                 # ...and the log says why
 
+# spare week: allowance on track to go unused -> new sessions on Fable; hot wins; leaving restores
+wk = lambda u7, left_d: {'seven_day': {'used_percentage': u7, 'resets_at': now + left_d * 86400}}
+assert g.is_spare(wk(40, 2), now, False) and not g.is_spare(wk(80, 2), now, False)   # 40/0.71 = 56% projected vs 112%
+assert not g.is_spare(wk(1, 6), now, False)                                  # a quiet first day is not a spare week
+assert g.is_spare(wk(65, 2), now, True) and not g.is_spare(wk(65, 2), now, False)    # 91%: hysteresis band
+s = {'model': 'opus[1m]', 'advisorModel': 'opus'}; st = {}
+g.apply_levers('spare', st, s); assert s == {'model': 'fable[1m]', 'advisorModel': 'opus'}, s
+g.apply_levers('hot', st, s); assert s == {'model': 'sonnet[1m]', 'advisorModel': 'off'}, s   # spare undone first, then step down from opus
+g.apply_levers(None, st, s); assert s == {'model': 'opus[1m]', 'advisorModel': 'opus'} and not st, (s, st)
+# a step-down left behind with no state is undone back to the install baseline; a deliberate other pick is not
+base = {'model': 'opus[1m]', 'advisorModel': 'opus'}
+s = {'model': 'sonnet[1m]', 'advisorModel': 'off'}; ch = g.apply_levers(None, {}, s, base)
+assert s == base and len(ch) == 2, (s, ch)
+s = {'model': 'sonnet[1m]', 'advisorModel': 'opus'}; assert g.apply_levers(None, {}, s, base) == [] and s['model'] == 'sonnet[1m]'
+
 import subprocess
 g.save_json(g._p('calibration.json'), {'five_hour': 1e-9, 'seven_day': 1e9, 'five_anchor': now + 3600, 'week_anchor': now + 3 * 86400})
 def run_hook(event, cwd, entry='claude-desktop', **env):
@@ -140,6 +155,29 @@ assert set(r['policies']) == {'today', 'compact@830k', '830k + pacer'} and r['fi
 page = audit.render_html(r); txt = audit.text(r)
 assert page.startswith('<title>CC Limit Pacer Stats</title>') and 'None' not in page and 'WHAT YOU WASTED' in txt, txt
 print('audit ok')
+
+# --- self-calibration: a lockout is a 100% reading; an estimate past 100% while still working raises the budget
+import datetime as dt
+tl = now - 1800; rs = dt.datetime.fromtimestamp(tl + 2 * 3600, dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
+with open(os.path.join(tmp, 'projects', 'x', 's3.jsonl'), 'w') as fh:
+    for k in range(2):                                                         # two blocked sessions, one lockout
+        fh.write(json.dumps({'type': 'assistant', 'isApiErrorMessage': True, 'timestamp': iso(tl + k), 'sessionId': 's3',
+                             'message': {'content': [{'type': 'text', 'text': f"You've hit your session limit · resets {rs:%-I%p} (UTC)".replace('AM', 'am').replace('PM', 'pm')}]}},
+                            separators=(',', ':'), ensure_ascii=False) + '\n')
+os.remove(g._p('scan_cache_v3.json')); c3 = g.scan(now=now)                   # warm the cache without the lockout seen
+w5 = g.spend(c3, rs.timestamp() - g.W5 - 600, tl)
+assert w5 > 0, w5
+g.save_json(g._p('calibration.json'), {'five_hour': 0.8 * w5, 'seven_day': 500.0})
+os.remove(g._p('scan_cache_v3.json')); g.scan(now=now)
+cal = json.load(open(g._p('calibration.json')))
+assert abs(cal['five_hour'] - 0.9 * w5) < 1e-6 and len(cal['learned']) == 1 and cal['five_anchor'] == rs.timestamp(), (cal, w5)
+g.save_json(g._p('calibration.json'), {'five_hour': 0.1 * w5, 'seven_day': 500.0})
+os.remove(g._p('scan_cache_v3.json')); g.scan(now=now)
+assert json.load(open(g._p('calibration.json')))['five_hour'] == 0.1 * w5      # 10x off: another account's lockout, ignored
+cal = {'five_hour': 0.01, 'seven_day': 1e6, 'five_anchor': now + 3600}
+rl2 = g.raise_on_overrun(c3, now, cal, g.estimate(c3, now, cal))
+assert rl2['five_hour']['used_percentage'] == 100 and cal['five_hour'] > 0.01 and cal['learned'][-1]['from'] == 'overrun', cal
+print('calibration ok')
 
 # --- simulate: a 5h window snaps to a known real reset and keeps only the spend that belongs to it
 import simulate

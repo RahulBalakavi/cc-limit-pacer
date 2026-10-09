@@ -7,6 +7,10 @@
       - starts NEW sessions one model tier down (Fable -> Opus, Opus -> Sonnet) with the advisor off, and
       - holds automated runs (SDK / `claude -p`, or sessions working in a temp dir) until the window resets.
     When usage cools down it restores your model/advisor settings.
+    While the week has room to spare (projected to end below `spare_below`% of the limit) new sessions start on
+    `spare_model` (Fable), so allowance that would go unused at reset buys the best model instead.
+  * Self-calibrating: every lockout Claude Code writes into a transcript is a 100% reading, and an estimate past
+    100% while you are still working proves the budget is higher; both retune the budgets with no /usage input.
   * Usage comes from the statusline's `rate_limits` when fresh (terminal CLI), else from your local transcripts
     priced at API rates (per model, incl. advisor) divided by a budget learned with `calibrate`.
 
@@ -22,7 +26,8 @@ SETTINGS = os.path.join(CLAUDE, 'settings.json')
 RL_FILE = os.path.join(CLAUDE, 'state', 'rate_limits.json')   # written by the statusline one-liner
 HOOK_PATH = os.path.join(CLAUDE, 'hooks', 'limit_pacer.py')
 W5, W7 = 5 * 3600, 7 * 86400
-CFG_DEFAULTS = {'verbose': False, 'levers': True, 'hold_batch': True, 'use_statusline': True, 'mode': 'enforce', 'floor': 500_000, 'hard': 800_000, 'near_reset_s': 1200, 'min_used_pct': 50, 'keep_below_pace': 1.0}
+CFG_DEFAULTS = {'verbose': False, 'levers': True, 'hold_batch': True, 'use_statusline': True, 'mode': 'enforce', 'floor': 500_000, 'hard': 800_000, 'near_reset_s': 1200, 'min_used_pct': 50, 'keep_below_pace': 1.0,
+                'spare_model': 'fable[1m]', 'spare_below': 90}
 FIRE_EARLY = 32_000   # Claude Code compacts ~32k below autoCompactWindow (measured at 100k and 600k windows)
 RL_FRESH_S = 15 * 60
 
@@ -78,7 +83,7 @@ def scan(days=8, now=None):
     now = now or time.time()
     cut = now - days * 86400
     cache = load_json(_p('scan_cache_v3.json'), {})   # v3: per-model $ + advisor
-    out, seen, fresh = [], set(), {}
+    out, seen, fresh, locks = [], set(), {}, []
     for f in glob.glob(os.path.join(CLAUDE, 'projects', '**', '*.jsonl'), recursive=True):
         try: st = os.stat(f)
         except OSError: continue
@@ -90,6 +95,7 @@ def scan(days=8, now=None):
                 fh.seek(ent['off']); chunk = fh.read()
             end = chunk.rfind(b'\n') + 1                      # only whole lines; a half-written line waits
             for line in chunk[:end].decode(errors='ignore').splitlines():
+                if 'hit your' in line and '"isApiErrorMessage":true' in line: locks.append(line); continue
                 if '"usage"' not in line: continue
                 try: d = json.loads(line)
                 except ValueError: continue
@@ -103,7 +109,9 @@ def scan(days=8, now=None):
             if rid in seen: continue
             seen.add(rid); out.append((ts, c))
     save_json(_p('scan_cache_v3.json'), fresh)
-    return sorted(out)
+    out.sort()
+    if locks: learn_from_lockouts(locks, out)
+    return out
 
 # ---------------------------------------------------------------- windows + usage estimate
 
@@ -147,6 +155,46 @@ def calibrate_from(rl, calls, now):
     save_json(_p('calibration.json'), cal)
     return cal
 
+def learn_from_lockouts(lines, calls):
+    """A lockout is an exact reading: 100% of that window's budget was spent by the time it hit."""
+    from backtest import LOCK_RE, parse_reset                 # same repo
+    cal = load_json(_p('calibration.json'), {})
+    seen = cal.setdefault('seen_locks', [])
+    for line in lines:
+        try: d = json.loads(line); m = LOCK_RE.search(json.dumps(d.get('message'), ensure_ascii=False))
+        except ValueError: continue
+        if not m: continue
+        t = _ts(d['timestamp']); kind = '5h' if m[1] == 'session' else 'week'
+        reset = parse_reset(t, m[2], m[3], m[4], m[5], m[6])
+        tag = f'{kind}:{round(reset / 600)}'                  # every blocked session logs the same lockout
+        if tag in seen: continue
+        seen.append(tag)
+        key, span = ('five_hour', W5) if kind == '5h' else ('seven_day', W7)
+        cal['five_anchor' if kind == '5h' else 'week_anchor'] = reset
+        if t < cal.get('week_locked_until', 0): continue      # hit inside our own weekly lockout: another account
+        if kind == 'week': cal['week_locked_until'] = reset
+        b, old = spend(calls, reset - span - (600 if kind == '5h' else 0), t), cal.get(key)
+        # ponytail: a 2x jump is read as another account sharing ~/.claude, not a real budget change; a learned
+        # per-account budget would need the account id, which transcripts don't carry.
+        if b <= 0 or (old and not 0.5 <= b / old <= 2): continue
+        cal[key] = b if not old else 0.5 * old + 0.5 * b
+        cal.setdefault('learned', []).append({'t': t, 'from': 'lockout', 'key': key, 'budget': round(cal[key], 2)})
+    cal['seen_locks'] = seen[-50:]; cal['learned'] = cal.get('learned', [])[-50:]
+    save_json(_p('calibration.json'), cal)
+
+def raise_on_overrun(calls, now, cal, rl):
+    """Estimate past 100% while calls are still going through: the limit wasn't hit, so the budget is at least the
+    window's spend. Raises budgets that are too low (false 'hot', predicted lockouts that never happen)."""
+    if not any(now - ts < 600 for ts, _ in calls[-5:]): return rl
+    changed = False
+    for key in ('five_hour', 'seven_day'):
+        r = rl.get(key)
+        if r and r['used_percentage'] > 100:
+            cal[key] *= r['used_percentage'] / 100; r['used_percentage'] = 100.0; changed = True
+            cal.setdefault('learned', []).append({'t': now, 'from': 'overrun', 'key': key, 'budget': round(cal[key], 2)})
+    if changed: cal['learned'] = cal['learned'][-50:]; save_json(_p('calibration.json'), cal)
+    return rl
+
 def estimate(calls, now, cal):
     """rate_limits-shaped estimate from local transcripts + calibrated budgets."""
     rl = {}
@@ -168,7 +216,7 @@ def usage(now=None):
         calibrate_from(rl, calls, now)
         return rl, 'statusline'
     cal = load_json(_p('calibration.json'), {})
-    rl = estimate(calls, now, cal)
+    rl = raise_on_overrun(calls, now, cal, estimate(calls, now, cal))
     return (rl, 'local-estimate') if rl else ({}, 'uncalibrated')
 
 BATCH_DIRS = ('/private/tmp/', '/tmp/', '/private/var/folders/', '/var/folders/')
@@ -207,6 +255,14 @@ def is_hot(rl, now, was_hot):
     p_min, used_min = EXIT if was_hot else ENTER
     return any(p >= p_min and rl[k]['used_percentage'] >= used_min for k, (p, _) in paces(rl, now).items())
 
+def is_spare(rl, now, was_spare, below=90):
+    """The week is on track to end with allowance left over: projected end-of-week use < `below`% (exit at +5).
+    Needs a quarter of the week behind it, so a quiet Monday doesn't read as a spare week."""
+    r = rl.get('seven_day') or {}
+    if r.get('used_percentage') is None or not r.get('resets_at'): return False
+    elapsed = 1 - (r['resets_at'] - now) / W7
+    return elapsed >= 0.25 and r['used_percentage'] / elapsed < below + (5 if was_spare else 0)
+
 def step_down(model):
     """One tier cheaper for NEW sessions (a running session keeps its model -- verified)."""
     m = model or ''
@@ -214,18 +270,24 @@ def step_down(model):
     if m.startswith(('opus', 'claude-opus')) or not m: return 'sonnet[1m]'
     return model                                       # sonnet / haiku: leave alone
 
-def apply_levers(hot, st, s):
+def baseline():
+    """model/advisor before install: recorded by install, else the oldest settings backup (installs before 0.6)."""
+    b = load_json(_p('install.json'), {}).get('baseline')
+    if b: return b
+    baks = sorted(glob.glob(_p('settings.bak-*')))
+    return {k: load_json(baks[0], {}).get(k) for k in ('model', 'advisorModel')} if baks else None
+
+def hot_levers(s): return {'model': step_down(s.get('model')), 'advisorModel': 'off'}
+
+def apply_levers(mode, st, s, baseline=None, spare_model='fable[1m]'):
     """Write (or restore) settings `model` / `advisorModel` in `s`; new sessions read them at start.
+    mode: 'hot' (step down, advisor off), 'spare' (spare_model), or None (restore). True/False = 'hot'/None.
     Restores only keys still holding the value we wrote, so a user's own /model choice wins.
+    `baseline` (the model/advisor at install) undoes a hot signature left behind without our state.
     Returns a list of changes for the log. Caller holds the state lock."""
+    mode = {True: 'hot', False: None}.get(mode, mode)
     changes = []
-    if hot and not st.get('wrote'):
-        st['saved'] = {k: s.get(k) for k in ('model', 'advisorModel')}
-        st['wrote'] = {'model': step_down(s.get('model')), 'advisorModel': 'off'}
-        for k, v in st['wrote'].items():
-            if s.get(k) != v: changes.append({'key': k, 'from': s.get(k), 'to': v})
-        s.update(st['wrote'])
-    elif not hot and st.get('wrote'):
+    if st.get('wrote') and st.get('mode', 'hot') != mode:
         for k, v in st['wrote'].items():
             if s.get(k) == v:
                 back = st['saved'].get(k)
@@ -234,7 +296,19 @@ def apply_levers(hot, st, s):
                 else: s[k] = back
             else:
                 changes.append({'key': k, 'skipped': 'user changed it while hot', 'now': s.get(k)})
-        st.pop('wrote'); st.pop('saved', None)
+        st.pop('wrote'); st.pop('saved', None); st.pop('mode', None)
+    elif not st.get('wrote') and not mode and baseline and s.get('advisorModel') == 'off' != baseline.get('advisorModel') \
+            and s.get('model') == step_down(baseline.get('model')) != baseline.get('model'):
+        for k in ('model', 'advisorModel'):                   # orphaned step-down (state lost): back to the baseline
+            changes.append({'key': k, 'from': s.get(k), 'to': baseline.get(k), 'why': 'orphaned step-down'})
+            if baseline.get(k) is None: s.pop(k, None)
+            else: s[k] = baseline[k]
+    if mode and not st.get('wrote'):
+        wrote = hot_levers(s) if mode == 'hot' else {'model': spare_model}
+        st.update(saved={k: s.get(k) for k in wrote}, wrote=wrote, mode=mode)
+        for k, v in wrote.items():
+            if s.get(k) != v: changes.append({'key': k, 'from': s.get(k), 'to': v})
+        s.update(wrote)
     return changes
 
 VERSION = load_json(os.path.join(os.path.dirname(os.path.realpath(__file__)), '.claude-plugin', 'plugin.json'), {}).get('version', 'dev')
@@ -278,12 +352,15 @@ def _pace(ev, t0):
         was = st.get('hot', False)
         hot = bool(rl) and is_hot(rl, now, was)
         if os.environ.get('LIMIT_PACER_FORCE') == 'hot': hot = True   # live tests
+        was_spare = st.get('spare', False)
+        spare = bool(rl) and not hot and bool(cfg.get('spare_model')) and is_spare(rl, now, was_spare, cfg['spare_below'])
         changes = []
         if cfg.get('levers', True):
             s = load_json(SETTINGS, {})
-            changes = apply_levers(hot, st, s)
+            changes = apply_levers('hot' if hot else 'spare' if spare else None, st, s,
+                                   baseline(), cfg.get('spare_model'))
             if any('to' in c for c in changes): save_json(SETTINGS, s)
-        st['hot'] = hot; st['t'] = now
+        st['hot'] = hot; st['spare'] = spare; st['t'] = now
         save_json(_p('pacer.json'), st)
     pc = {k: f"{rl[k]['used_percentage']:.0f}% (pace {p:.1f})" for k, (p, _) in paces(rl, now).items()}
     held = (hot and ev.get('hook_event_name') == 'UserPromptSubmit' and cfg.get('hold_batch', True)
@@ -296,6 +373,7 @@ def _pace(ev, t0):
     rec = {'t': now, 'v': VERSION, 'event': ev.get('hook_event_name'), 'hot': hot, 'held': held,
            'ms': round((time.perf_counter() - t0) * 1000)}
     if hot != was: rec['transition'] = 'hot' if hot else 'cool'
+    elif spare != was_spare: rec['transition'] = 'spare' if spare else 'cool'
     if changes: rec['settings'] = changes
     if held: rec['cwd'] = ev.get('cwd'); rec['entry'] = os.environ.get('CLAUDE_CODE_ENTRYPOINT')
     if source.startswith('error'): rec['source'] = source
@@ -313,6 +391,9 @@ def _pace(ev, t0):
         msgs.append(f"cc-limit-pacer: {'running hot' if hot else 'back under pace'} — {pc}. "
                     + ('New sessions start one model tier down with the advisor off; batch runs are held.'
                        if hot else 'Model and advisor settings restored.'))
+    elif spare != was_spare:
+        msgs.append(f"cc-limit-pacer: {'the week has allowance to spare' if spare else 'spare-week mode off'} — {pc}. "
+                    + (f"New sessions start on {cfg['spare_model']}." if spare else 'Model setting restored.'))
     if held:
         hot_resets = [rl[k]['resets_at'] for k, (p, _) in paces(rl, now).items() if p >= EXIT[0]]
         resets = min(hot_resets or [v['resets_at'] for v in rl.values() if v.get('resets_at')] or [now])
@@ -340,7 +421,8 @@ def cmd_install(a):
     if os.path.exists(SETTINGS): shutil.copy(SETTINGS, _p(f'settings.bak-{int(time.time())}'))
     prev = load_json(_p('install.json'), {})
     save_json(_p('install.json'), {'prev_autoCompactWindow': prev.get('prev_autoCompactWindow', s.get('autoCompactWindow')),
-                                   't': prev.get('t', time.time())})
+                                   't': prev.get('t', time.time()),
+                                   'baseline': prev.get('baseline') or {k: s.get(k) for k in ('model', 'advisorModel')}})
     save_json(_p('config.json'), config())
     s['autoCompactWindow'] = a.compact_at + FIRE_EARLY
     hooks = s.setdefault('hooks', {}); _strip_ours(hooks)
